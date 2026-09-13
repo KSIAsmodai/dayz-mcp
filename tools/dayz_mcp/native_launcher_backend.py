@@ -1212,6 +1212,7 @@ def _supervise_created_launcher(
     addon_helper_pids: set[int] = set()
     addon_helper_launches = 0
     cleanup_complete = False
+    second_wait_ran = False
 
     def receive_announcement(_channel: str, chunk: bytes) -> None:
         received_at = time.monotonic()
@@ -1530,17 +1531,21 @@ def _supervise_created_launcher(
     except BaseException:
         if not cleanup_complete:
             created.close_job()
-            deadline = time.monotonic() + _DEBUG_DRAIN_SECONDS
-            _drain_after_job_close(
-                state,
-                deadline=deadline,
-                creator_thread_id=creator_thread_id,
-            )
-            _wait_active_zero(
-                created.completion_port_handle,
-                expected_job_handle=job_completion_key,
-                deadline=deadline,
-            )
+            # second_wait + empty debug map: ZERO never reached the waiter.
+            # Another _DEBUG_DRAIN_SECONDS poll cannot recover a consumed or
+            # never-posted JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO.
+            if not (second_wait_ran and state.open_handle_count == 0):
+                deadline = time.monotonic() + _DEBUG_DRAIN_SECONDS
+                _drain_after_job_close(
+                    state,
+                    deadline=deadline,
+                    creator_thread_id=creator_thread_id,
+                )
+                _wait_active_zero(
+                    created.completion_port_handle,
+                    expected_job_handle=job_completion_key,
+                    deadline=deadline,
+                )
         raise
     finally:
         if request_writer is not None and not request_writer.done:
