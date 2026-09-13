@@ -23,6 +23,7 @@ import importlib
 import json
 import sys
 import tempfile
+import textwrap
 import types
 import unittest
 import uuid
@@ -99,26 +100,67 @@ def _h14_stop_workspace(root: Path):
     return authority._seal_project_policy_for_test(policy)
 
 
-def _h14_nested_mcp_tool_holds_tool_lock(name: str) -> bool:
-    tree = ast.parse(
-        Path(server.__file__).read_text(encoding="utf-8"),
-        filename=str(server.__file__),
+def _h14_is_client_tool_lock(expr: ast.AST) -> bool:
+    return (
+        isinstance(expr, ast.Attribute)
+        and expr.attr == "tool_lock"
+        and isinstance(expr.value, ast.Name)
+        and expr.value.id == "client"
     )
+
+
+def _h14_iter_excluding_nested_defs(root: ast.AST):
+    stack = [root]
+    skip_nested = False
+    while stack:
+        node = stack.pop()
+        if skip_nested and isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        ):
+            continue
+        skip_nested = True
+        yield node
+        stack.extend(reversed(list(ast.iter_child_nodes(node))))
+
+
+def _h14_awaited_body_inside_client_tool_lock(fn: ast.AsyncFunctionDef) -> bool:
+    for node in _h14_iter_excluding_nested_defs(fn):
+        if not isinstance(node, ast.AsyncWith):
+            continue
+        if not any(_h14_is_client_tool_lock(item.context_expr) for item in node.items):
+            continue
+        if any(
+            isinstance(child, ast.Await)
+            for child in _h14_iter_excluding_nested_defs(node)
+        ):
+            return True
+    return False
+
+
+def _h14_build_app_mcp_tool(tree: ast.AST, name: str) -> ast.AsyncFunctionDef | None:
     build = next(
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "build_app"
     )
-    for node in ast.walk(build):
+    for node in build.body:
         if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
-            for child in ast.walk(node):
-                if not isinstance(child, ast.AsyncWith):
-                    continue
-                for item in child.items:
-                    ctx = item.context_expr
-                    if isinstance(ctx, ast.Attribute) and ctx.attr == "tool_lock":
-                        return True
-    return False
+            return node
+    return None
+
+
+def _h14_nested_mcp_tool_holds_tool_lock(
+    name: str, source: str | None = None
+) -> bool:
+    if source is None:
+        path = Path(server.__file__)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    else:
+        tree = ast.parse(source)
+    fn = _h14_build_app_mcp_tool(tree, name)
+    if fn is None:
+        return False
+    return _h14_awaited_body_inside_client_tool_lock(fn)
 
 
 class _H14ClientRuntime(server.ClientRuntime):
@@ -580,6 +622,75 @@ class _H14Control:
             yield
         finally:
             self.kill = previous
+
+
+class H14NestedToolLockAstTests(unittest.TestCase):
+    def test_head_mcp_tools_await_inside_client_tool_lock(self) -> None:
+        for name in (
+            "dayz_test_stop",
+            "session_acquire_wait",
+            "session_status",
+        ):
+            self.assertTrue(_h14_nested_mcp_tool_holds_tool_lock(name), name)
+
+    def test_lock_mutants_m1_m2_m3_m4(self) -> None:
+        canonical = textwrap.dedent(
+            """
+            def build_app():
+                async def session_acquire_wait(purpose):
+                    async with client.tool_lock:
+                        return await client.session_acquire_wait(purpose)
+            """
+        )
+        m1 = textwrap.dedent(
+            """
+            def build_app():
+                async def session_acquire_wait(purpose):
+                    async with client.tool_lock:
+                        pass
+                    return await client.session_acquire_wait(purpose)
+            """
+        )
+        m2 = textwrap.dedent(
+            """
+            def build_app():
+                async def session_acquire_wait(purpose):
+                    async with client._control.tool_lock:
+                        return await client.session_acquire_wait(purpose)
+            """
+        )
+        m3 = textwrap.dedent(
+            """
+            def build_app():
+                async def session_acquire_wait(purpose):
+                    return await client.session_acquire_wait(purpose)
+            """
+        )
+        m4 = textwrap.dedent(
+            """
+            def build_app():
+                async def session_acquire_wait(purpose):
+                    async def _dead():
+                        async with client.tool_lock:
+                            return await client.session_acquire_wait(purpose)
+                    return await client.session_acquire_wait(purpose)
+            """
+        )
+        self.assertTrue(
+            _h14_nested_mcp_tool_holds_tool_lock("session_acquire_wait", canonical)
+        )
+        self.assertFalse(
+            _h14_nested_mcp_tool_holds_tool_lock("session_acquire_wait", m1)
+        )
+        self.assertFalse(
+            _h14_nested_mcp_tool_holds_tool_lock("session_acquire_wait", m2)
+        )
+        self.assertFalse(
+            _h14_nested_mcp_tool_holds_tool_lock("session_acquire_wait", m3)
+        )
+        self.assertFalse(
+            _h14_nested_mcp_tool_holds_tool_lock("session_acquire_wait", m4)
+        )
 
 
 class H14OwnedStopWiringTests(unittest.IsolatedAsyncioTestCase):
