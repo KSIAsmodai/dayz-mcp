@@ -1615,7 +1615,7 @@ class NativeDebugOwnershipTests(unittest.TestCase):
         )
         self.assertNotIn("active_zero", fake.events)
 
-    def test_fb_c9ca_cleanup_incomplete_reports_active_zero_wait_timed_out(self) -> None:
+    def test_fb_c9ca_missing_zero_empty_handles_returns_root_exit(self) -> None:
         backend = self._backend()
         fake = _FakeKernel32()
         fake.pipe_bytes[23] = bytearray(_announcement_frame())
@@ -1649,26 +1649,20 @@ class NativeDebugOwnershipTests(unittest.TestCase):
         backend._DEBUG_DRAIN_SECONDS = 0.0
         try:
             created = self._create(backend, fake)
-            with self.assertRaises(backend.NativeLauncherBackendError) as raised:
-                backend._supervise_created_launcher(
-                    created,
-                    canonical_request=b"{}",
-                    runtime_pipes=backend.NativeRuntimePipes(
-                        11, 21, 22, 12, 23, 13, 14, 24, 15, 25
-                    ),
-                    image_authority=_ImageAuthority(),
-                    cancel_signal=threading.Event(),
-                )
+            result = backend._supervise_created_launcher(
+                created,
+                canonical_request=b"{}",
+                runtime_pipes=backend.NativeRuntimePipes(
+                    11, 21, 22, 12, 23, 13, 14, 24, 15, 25
+                ),
+                image_authority=_ImageAuthority(),
+                cancel_signal=threading.Event(),
+            )
         finally:
             backend._DEBUG_DRAIN_SECONDS = original_debug_drain
             backend._kernel32 = original_kernel32
-        error = raised.exception
-        self.assertEqual(error.code, "native_job_cleanup_incomplete")
-        self.assertEqual(error.fine_code, "active_zero_wait_timed_out")
-        self.assertEqual(
-            error.detail,
-            "drain_s=0.0 second_wait=True open_handles=0 continues=4",
-        )
+        self.assertEqual(result, 0)
+        self.assertEqual(backend._DEBUG_DRAIN_SECONDS, 5.0)
 
     def test_second_wait_empty_handles_is_missing_zero_not_a_longer_drain(self) -> None:
         backend = self._backend()
@@ -1719,30 +1713,23 @@ class NativeDebugOwnershipTests(unittest.TestCase):
         started = backend.time.monotonic()
         try:
             created = self._create(backend, fake)
-            with self.assertRaises(backend.NativeLauncherBackendError) as raised:
-                backend._supervise_created_launcher(
-                    created,
-                    canonical_request=b"{}",
-                    runtime_pipes=backend.NativeRuntimePipes(
-                        11, 21, 22, 12, 23, 13, 14, 24, 15, 25
-                    ),
-                    image_authority=_ImageAuthority(),
-                    cancel_signal=threading.Event(),
-                )
+            result = backend._supervise_created_launcher(
+                created,
+                canonical_request=b"{}",
+                runtime_pipes=backend.NativeRuntimePipes(
+                    11, 21, 22, 12, 23, 13, 14, 24, 15, 25
+                ),
+                image_authority=_ImageAuthority(),
+                cancel_signal=threading.Event(),
+            )
         finally:
             backend._wait_active_zero = original_wait
             backend._drain_after_job_close = original_drain
             backend._kernel32 = original_kernel32
-        error = raised.exception
+        self.assertEqual(result, 0)
         self.assertLess(backend.time.monotonic() - started, 2.0)
         self.assertEqual(len(wait_calls), 2)
         self.assertEqual(len(drain_calls), 1)
-        self.assertEqual(error.code, "native_job_cleanup_incomplete")
-        self.assertEqual(error.fine_code, "active_zero_wait_timed_out")
-        self.assertEqual(
-            error.detail,
-            "drain_s=5.0 second_wait=True open_handles=0 continues=4",
-        )
         self.assertEqual(backend._DEBUG_DRAIN_SECONDS, 5.0)
 
     def test_open_handles_still_drain_after_cleanup_incomplete_raise(self) -> None:

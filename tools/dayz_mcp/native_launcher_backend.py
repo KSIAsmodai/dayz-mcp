@@ -1498,7 +1498,15 @@ def _supervise_created_launcher(
                 deadline=time.monotonic() + _DEBUG_DRAIN_SECONDS,
             )
         cleanup_complete = state.active_zero and active_zero_completed
-        if not cleanup_complete:
+        # second_wait + empty debug map: missing JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO
+        # is still cleanup complete. Do not fail the launch.
+        if (
+            not cleanup_complete
+            and second_wait_ran
+            and state.open_handle_count == 0
+        ):
+            cleanup_complete = True
+        elif not cleanup_complete:
             failure = "native_job_cleanup_incomplete"
         if failure == "native_launcher_cancelled":
             return 130
