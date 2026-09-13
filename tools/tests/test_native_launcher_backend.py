@@ -1670,6 +1670,145 @@ class NativeDebugOwnershipTests(unittest.TestCase):
             "drain_s=0.0 second_wait=True open_handles=0 continues=4",
         )
 
+    def test_second_wait_empty_handles_is_missing_zero_not_a_longer_drain(self) -> None:
+        backend = self._backend()
+        fake = _FakeKernel32()
+        fake.pipe_bytes[23] = bytearray(_announcement_frame())
+        fake.completion_events = [
+            (True, 6, 501, 703),
+            (True, 6, 501, 900),
+        ]
+        fake.debug_events = [
+            backend.NativeDebugEvent(
+                "CREATE_PROCESS",
+                pid=703,
+                tid=704,
+                process_handle=801,
+                thread_handle=802,
+                file_handle=803,
+            ),
+            backend.NativeDebugEvent(
+                "CREATE_PROCESS",
+                pid=900,
+                tid=901,
+                process_handle=811,
+                thread_handle=812,
+                file_handle=813,
+            ),
+            backend.NativeDebugEvent("EXIT_PROCESS", pid=900, tid=901, exit_code=0),
+            backend.NativeDebugEvent("EXIT_PROCESS", pid=703, tid=704, exit_code=0),
+        ]
+        wait_calls: list[object] = []
+        drain_calls: list[object] = []
+        original_kernel32 = backend._kernel32
+        original_wait = backend._wait_active_zero
+        original_drain = backend._drain_after_job_close
+        self.assertEqual(backend._DEBUG_DRAIN_SECONDS, 5.0)
+
+        def counting_wait(*args: object, **kwargs: object) -> bool:
+            wait_calls.append(kwargs)
+            return False
+
+        def counting_drain(*args: object, **kwargs: object) -> None:
+            drain_calls.append(kwargs)
+            return original_drain(*args, **kwargs)
+
+        backend._kernel32 = fake
+        backend._wait_active_zero = counting_wait
+        backend._drain_after_job_close = counting_drain
+        started = backend.time.monotonic()
+        try:
+            created = self._create(backend, fake)
+            with self.assertRaises(backend.NativeLauncherBackendError) as raised:
+                backend._supervise_created_launcher(
+                    created,
+                    canonical_request=b"{}",
+                    runtime_pipes=backend.NativeRuntimePipes(
+                        11, 21, 22, 12, 23, 13, 14, 24, 15, 25
+                    ),
+                    image_authority=_ImageAuthority(),
+                    cancel_signal=threading.Event(),
+                )
+        finally:
+            backend._wait_active_zero = original_wait
+            backend._drain_after_job_close = original_drain
+            backend._kernel32 = original_kernel32
+        error = raised.exception
+        self.assertLess(backend.time.monotonic() - started, 2.0)
+        self.assertEqual(len(wait_calls), 2)
+        self.assertEqual(len(drain_calls), 1)
+        self.assertEqual(error.code, "native_job_cleanup_incomplete")
+        self.assertEqual(error.fine_code, "active_zero_wait_timed_out")
+        self.assertEqual(
+            error.detail,
+            "drain_s=5.0 second_wait=True open_handles=0 continues=4",
+        )
+        self.assertEqual(backend._DEBUG_DRAIN_SECONDS, 5.0)
+
+    def test_open_handles_still_drain_after_cleanup_incomplete_raise(self) -> None:
+        backend = self._backend()
+
+        class NoExitKernel(_FakeKernel32):
+            def WaitForDebugEvent(self, *_args: object) -> object:
+                event = super().WaitForDebugEvent(*_args)
+                if event is None:
+                    ctypes.set_last_error(backend._ERROR_SEM_TIMEOUT)
+                    return False
+                return event
+
+        fake = NoExitKernel()
+        fake.debug_events = [
+            backend.NativeDebugEvent(
+                "CREATE_PROCESS",
+                pid=703,
+                tid=704,
+                process_handle=801,
+                thread_handle=802,
+                file_handle=803,
+            ),
+        ]
+        cancel = threading.Event()
+        fake.on_request_write = cancel.set
+        wait_calls: list[object] = []
+        original_kernel32 = backend._kernel32
+        original_cancel_grace = backend._CANCEL_GRACE_SECONDS
+        original_debug_drain = backend._DEBUG_DRAIN_SECONDS
+        original_wait = backend._wait_active_zero
+
+        def counting_wait(*args: object, **kwargs: object) -> bool:
+            wait_calls.append(kwargs)
+            return original_wait(*args, **kwargs)
+
+        backend._kernel32 = fake
+        backend._CANCEL_GRACE_SECONDS = 0.0
+        backend._DEBUG_DRAIN_SECONDS = 0.0
+        backend._wait_active_zero = counting_wait
+        try:
+            created = self._create(backend, fake)
+            with self.assertRaises(backend.NativeLauncherBackendError) as raised:
+                backend._supervise_created_launcher(
+                    created,
+                    canonical_request=b"{}",
+                    runtime_pipes=backend.NativeRuntimePipes(
+                        11, 21, 22, 12, 23, 13, 14, 24, 15, 25
+                    ),
+                    image_authority=_ImageAuthority(),
+                    cancel_signal=cancel,
+                )
+        finally:
+            backend._wait_active_zero = original_wait
+            backend._DEBUG_DRAIN_SECONDS = original_debug_drain
+            backend._CANCEL_GRACE_SECONDS = original_cancel_grace
+            backend._kernel32 = original_kernel32
+        error = raised.exception
+        self.assertEqual(error.code, "native_job_cleanup_incomplete")
+        self.assertEqual(error.fine_code, "active_zero_never_observed")
+        self.assertEqual(
+            error.detail,
+            "drain_s=0.0 second_wait=True open_handles=2 continues=1",
+        )
+        self.assertEqual(len(wait_calls), 2)
+
     def test_started_cancellation_cancels_blocked_request_write_without_stalling_debug(self) -> None:
         backend = self._backend()
         fake = _FakeKernel32()
