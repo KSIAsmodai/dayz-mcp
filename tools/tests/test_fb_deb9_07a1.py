@@ -55,6 +55,21 @@ def _compact(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
+def _if_condition(text: str, start: int) -> str:
+    match = re.compile(r"\bif\s*\(").search(text, start)
+    if not match:
+        raise AssertionError("missing if condition")
+    depth = 0
+    for index in range(match.end() - 1, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return text[match.end() : index]
+    raise AssertionError("unterminated if condition")
+
+
 class FbDeb907a1SourceContractTest(unittest.TestCase):
     def test_fb_deb9_07a1_shift_up_sits_behind_settle_interval_guard(self) -> None:
         source = CAR_SCRIPT.read_text(encoding="utf-8")
@@ -117,6 +132,68 @@ class FbDeb907a1SourceContractTest(unittest.TestCase):
         self.assertIn("nearest to pos", description)
         self.assertIn("search radius", description)
         self.assertIn("does not place the player in the server crew", description)
+
+    def test_fb_deb9_p2_settle_stamp_resets_per_drive_and_ignores_a_backward_clock(
+        self,
+    ) -> None:
+        source = CAR_SCRIPT.read_text(encoding="utf-8")
+        drive = _method_body(source, "class MCPCarDrive")
+        const_match = re.search(
+            r"static\s+const\s+float\s+(\w+)\s*=\s*([0-9.]+)\s*;", drive
+        )
+        self.assertIsNotNone(const_match)
+        const_name = const_match.group(1)
+        self.assertGreater(float(const_match.group(2)), 0.0)
+
+        clear = _method_body(drive, "static void Clear()")
+        extra = [
+            name
+            for name in re.findall(r"\b(s_\w+)\s*=", clear)
+            if name not in KNOWN_CLEAR_STATICS
+        ]
+        self.assertEqual(len(extra), 1)
+        stamp_name = extra[0]
+        negative = r"(-[0-9]+(?:\.[0-9]+)?)\s*;"
+
+        declared = re.search(
+            rf"\bstatic\s+float\s+{stamp_name}\s*=\s*{negative}", drive
+        )
+        self.assertIsNotNone(declared)
+        self.assertLess(float(declared.group(1)), 0.0)
+        self.assertRegex(clear, rf"\b{stamp_name}\s*=\s*{negative}")
+
+        set_body = _method_body(drive, "static void Set(")
+        guard = re.search(r"\bif\s*\(", set_body)
+        self.assertIsNotNone(guard)
+        reset_clauses = _compact(_if_condition(set_body, guard.start())).split("||")
+        self.assertCountEqual(
+            reset_clauses,
+            ["!s_Active", "s_Car!=car", "GetGame().GetTickTime()>s_DeadlineS"],
+        )
+        self.assertRegex(
+            _body_re(set_body, r"\bif\s*\("), rf"\b{stamp_name}\s*=\s*{negative}"
+        )
+        deadline_write = re.search(r"\bs_DeadlineS\s*=(?!=)", set_body)
+        self.assertIsNotNone(deadline_write)
+        self.assertLess(guard.start(), deadline_write.start())
+
+        on_input = _method_body(source, "override void OnInput(float dt)")
+        throttle_body = _body_re(on_input, r"if\s*\(\s*throttle\s*>\s*0\.1\s*\)")
+        clock = re.search(
+            r"\bfloat\s+(\w+)\s*=\s*GetGame\(\)\.GetTickTime\(\)\s*;", throttle_body
+        )
+        self.assertIsNotNone(clock)
+        now = clock.group(1)
+        stamp = f"MCPCarDrive.{stamp_name}"
+        shift_clauses = _compact(_if_condition(throttle_body, clock.end())).split("||")
+        self.assertCountEqual(
+            shift_clauses,
+            [
+                f"{stamp}<0.0",
+                f"{now}<{stamp}",
+                f"{now}-{stamp}>=MCPCarDrive.{const_name}",
+            ],
+        )
 
 
 if __name__ == "__main__":

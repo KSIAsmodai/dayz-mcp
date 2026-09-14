@@ -14,10 +14,19 @@ class MCPCarDrive
 	// Seconds between automatic ShiftUp calls. Stops a burst of upshifts
 	// while rpm remains above the redline threshold.
 	static const float AUTO_SHIFT_SETTLE_S = 0.3;
-	static float s_LastAutoShiftS;
+	// Tick time of the last automatic ShiftUp; negative while the current
+	// drive has not shifted yet.
+	static float s_LastAutoShiftS = -1.0;
 
 	static void Set(CarScript car, float throttle, float steer, float brake, float handbrake, float deadlineS)
 	{
+		// A new drive, a different car or a lapsed deadline starts without
+		// the settle stamp of the previous drive.
+		if (!s_Active || s_Car != car || GetGame().GetTickTime() > s_DeadlineS)
+		{
+			s_LastAutoShiftS = -1.0;
+		}
+
 		s_Car = car;
 		s_Throttle = throttle;
 		s_Steer = steer;
@@ -749,7 +758,8 @@ modded class CarScript
 						if (throttle > 0.1)
 						{
 							float nowS = GetGame().GetTickTime();
-							if (MCPCarDrive.s_LastAutoShiftS < 0.0 || nowS - MCPCarDrive.s_LastAutoShiftS >= MCPCarDrive.AUTO_SHIFT_SETTLE_S)
+							// A stamp ahead of the clock is stale and never blocks.
+							if (MCPCarDrive.s_LastAutoShiftS < 0.0 || nowS < MCPCarDrive.s_LastAutoShiftS || nowS - MCPCarDrive.s_LastAutoShiftS >= MCPCarDrive.AUTO_SHIFT_SETTLE_S)
 							{
 								ShiftUp();
 								MCPCarDrive.s_LastAutoShiftS = nowS;
