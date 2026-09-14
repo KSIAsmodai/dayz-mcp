@@ -1,46 +1,70 @@
 # HANDOFF — DayZ-MCP
 
 <!-- LIVE-STATE:START -->
-# DayZ-MCP — Estado vivo · snapshot 2026-09-12
+# DayZ-MCP — Estado vivo · snapshot 2026-09-14
 
-**Última verificación real:** 2026-09-12 — plan de olas W1–WF despachado. Mapa: Context `docs/mcp-end-to-end-plan.md` (no está en este repo). Esta rama cierra W1 (docs), incluido W1-P1-01 (banners STALE en raíz).
-Publicado v1.2 `9f0343e`. PBO live `F82CFA8C4E557FFF…` @ `a9fe673` (PR #23), 258424 B, mtime 12-sep 01:04, Workshop + `P:\Mods\@DayZ_MCP`. Tip `main` = `edc7bb3` (0ab2) encima de `80ed00b` (a429).
+**Última verificación real:** 2026-09-14.
+- **Promoción:** `main` `1bad174` pasó al árbol vivo `P:\DayZ_MCP_dev` y el daemon se reinició (generación `eca81d26…`, `daemon_modules.stale=[]`, caja vacía).
+- **Ola 1:** mergeada en `main` como PRs #44–#48; **aún no está en el árbol vivo**.
+- **PBO desplegado:** `F77AAC3E…`, idéntico a `main` @ `1bad174` en sus 13 entradas. #44 cambia Enforce (`MCP_CarScript.c`, `MCPClientBridge.c`) **sin empaquetar**.
 
-bugs: (no hay `bugs.md` vivo en `DayZ_MCP_dev`) · tracker = buzón `pipeline_inbox` · **66** abiertas (W2 2026-09-12: 29 `resolves`, baseline 95→66). No recontar ni re-resolver esas 29. · toque 2026-09-12
-ciclos_en_este_objetivo: 2 (W1 docs + W1-P1-01)
+bugs: tracker = buzón `pipeline_inbox` · **25** abiertas (censo 2026-09-14: 22 tras cerrar A2, más las nuevas `4554`, `160e` y `6553`) · toque 2026-09-14
+ciclos_en_este_objetivo: 1 (triaje del buzón + promoción + Ola 1)
 
 ## Estado actual
 
-Plan de olas W1–WF despachado en vuelo. Publicado y jugable v1.2 `9f0343e`. Tip de producto `main` = `edc7bb3` (0ab2) encima de `80ed00b` (a429). PBO live `F82CFA8C4E557FFF…` @ `a9fe673` (PR #23).
-
-PARK leftover (no reimplementar): `a429` y `0ab2` ya están en `main`; `546d` = PR #26 abierta (esta ola NO la toca, no mergea).
-PARO `3fc1` y `1025` siguen PARO. No reabrir sin ángulo nuevo.
-LFPowerGrid no es el trabajo actual de este producto.
+- **Tip `main` = `ad2fafb` (merge de #48).** El árbol vivo sigue en `1bad174`: lo mergeado en #44–#48 **no sirve** hasta una segunda promoción. Esa promoción requiere caja vacía, `git merge --ff-only` en `P:`, reinicio del daemon y avisar a las sesiones abiertas para que reabran su cliente.
+- **Buzón triado** el 2026-09-14 (`reviews/triage-20260914-agy/RESUMEN.md`, sin versionar). 34 cerradas en triaje y las 3 A2 (`2c43`, `b1ff`, `14de`) tras la promoción.
+- **Ola 1**, por lanes Grok 4.6/Cursor en worktrees, con gates-ledger y review Codex `gpt-5.6-sol`:
+  - **#44** `deb9` + `07a1`: settle de ShiftUp y get-in al coche más cercano. Enforce offline; queda G7 in-game.
+  - **#45** `6d18` + `c12b`: `session_locked` en captura y nota de 20 fps sin foco.
+  - **#46** `050e` + `145c`: fecha del registro en el rechazo untrusted (lista blanca de sello UTC); aviso `caller_tool_registry_stale` en `dayz_test_run`.
+  - **#47** `7ef2` + `dff2`: generación del daemon cableada al lifecycle; filtro de token para generaciones en el wire; `session_release` documentado.
+  - **#48** `4554`: el doctor vuelve a parsear `--supervised`/`--exec-audit-path` y a comprobar el daemon.
+- **Doctor tras la promoción:** FAIL por dos causas previas a ella (D-70). Una la arregla #48; la otra es la ficha `160e`.
 
 ## Tickets
 
-GitHub `willy92wins/dayz-mcp`: PR #26 abierta (`546d`, W1 no la edita). El tracker real es el buzón (`pipeline_inbox` / `pipeline_feedback` / `pipeline_resolve`) en `%LOCALAPPDATA%\DayZ_MCP\inbox\feedback.jsonl`. Identificadores `fb-AAAAMMDD-HHMMSS-xxxx`, citados por sufijo (`0de3`, `3fc1`, `1025`, …).
+GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido del buzón en commits). El tracker real es el buzón (`pipeline_inbox` / `pipeline_feedback` / `pipeline_resolve`) en `%LOCALAPPDATA%\DayZ_MCP\inbox\feedback.jsonl`, con ids `fb-AAAAMMDD-HHMMSS-xxxx` citados por sufijo.
+
+- **Cerrar tras la segunda promoción:** `050e`, `145c`, `c12b`, `4554`.
+- **Cerrar tras G7 in-game:** `deb9`, `07a1`.
+- **Nueva sin resolver:** `6553`, test inestable del writer de audit. El hilo con budget compite con `rmtree` y puede poner rojo un G3 sin regresión real; hay que hacerlo hermético.
+- **Abiertas con resto:**
+  - `7ef2`: rastro de runs huérfanos en `session_status`.
+  - `dff2`: runbook y causa real de la muerte.
+  - `6d18`: decisión sobre captura por motor (MakeScreenshot roto, T165276).
 
 ## Próxima acción
 
-W2 C-resolve **ya está hecho** (2026-09-12, 29 ids, 95→66). **No** relanzar W2 ni re-resolver el lote C. Tras aterrizar W1: W3 tests; W4 grill + re-enrute de las 20 aún abiertas (otro escritor JSONL, no es un segundo W2). Occupancy = W5 (needs grill). No in-game en W1.
+1. **Dueño:** decidir la segunda promoción (Ola 1 a vivo) y ejecutarla con la caja vacía. Después, `pipeline_resolve` de las cuatro fichas de arriba, y `doctor` para verificar que ya no sale CONFIG_UNREADABLE.
+2. **Dueño, ficha `160e`:** archivar los 10 slots `runs.json.bak-preprune*` (precedente `_preprune-archive\20260816\`) y fijar retención para `lifecycle-recovery-faults\backups` (8766 copias, 1,1 GB).
+3. **Ola 2 in-game con el dueño:**
+   - build del PBO con #44 y G7 de `deb9`/`07a1`, más sus 5 P2 de review;
+   - WF §6: G3 GREEN, freecam→get-in / BUG-040, `b1ff` I1, time/weather, BUG-069/083/113/096;
+   - B3 #6: `c261`, `3bb4`, `5dbe`, `1f21`;
+   - `f298` y `f47b`.
+4. **Decisiones de dueño pendientes:** modelo de cola `2223`, parada ordenada `8604`, `8bc6`, PARO/PARK (`3fc1`/`dce1`/`1025`, `2edd`-1, `dae1`-1/2).
 
 ## Invariantes CERRADAS — NO retocar / NO reabrir sin ángulo nuevo
 
 - **v1.2 publicado** (2026-09-12 · `9f0343e` · sesión B3 `AI/30_Sessions/2026-09-12-dayzmcp-noche-b3-v11.md`)
-- **Tramo jugable de tres-bloques CERRADO** in-game: `0de3`+`5872`+`#4b`+`#6`+`9195`+`738a`+`CAMBIO` · PRs **#19–#25**
+- **Tramo jugable de tres bloques CERRADO** in-game: `0de3`+`5872`+`#4b`+`#6`+`9195`+`738a`+`CAMBIO` · PRs **#19–#25**
 - **`84c4`** barrier mergeado (PR #25 → `6b6dd9e`)
 - **`d50e` LEAVE_UNTRACKED** + resolved · evidencia `reviews/mcp-d50e-juicio-20260912/`
+- **`world_time_set`:** `multiplier_applied=null` + `multiplier_unconfirmed` es el contrato final (D-69, #35).
+- **Códigos de stop fijados por tests:** fila presente no activa → `run_not_active`; id desconocido → `run_not_found`. `run_retired` retirado (D-70).
+- **Wire:** un texto persistido o de identidad solo sale en payloads públicos tras pasar una lista blanca de forma (sello UTC en `control_client`, token de generación en `process_lifecycle`). Un parser no es un filtro (D-70).
 
 ## Punteros (detalle)
 
-- Mapa de olas W1–WF: Context `C:\cursor\stores\bc-79bb298c-84d6-46ba-865a-2bf73355a742\docs\mcp-end-to-end-plan.md` (no está en este repo)
-- `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-12-dayzmcp-noche-b3-v11.md`
-- Plan tres bloques (histórico; tramo jugable cerrado): `ObsidianVault\AI\10_Projects\DayZ_MCP\plans\2026-09-10-tres-bloques-backlog.md`
+- Decisiones D-69 y D-70: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\decisions\decision-log.md`
+- Evidencia de la Ola 1 (ledgers, reverify, reviews, briefs): `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-ola1\`
+- Sesión: `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-triaje-promocion-ola1.md`
 - Histórico pre-v1.2: [`HANDOFF-ARCHIVE.md`](HANDOFF-ARCHIVE.md)
 - `NEXT-SESSION-PROMPT.txt` es de **22-ago** y está **obsoleto**. No usarlo.
 
-**Gate de arranque:** `Retomo DayZ-MCP desde: plan de olas W1–WF en vuelo · W2 C-resolve ya aplicado (95→66, no re-resolver) · próxima acción: aterrizar W1 (banners STALE raíz) luego W3/W4; occupancy=W5`
+**Gate de arranque:** `Retomo DayZ-MCP desde: Ola 1 mergeada (#44–#48) pero NO promovida · árbol vivo 1bad174 · 25 fichas abiertas · próxima acción: decisión de segunda promoción del dueño, luego resolve 050e/145c/c12b/4554 y Ola 2 in-game`
 <!-- LIVE-STATE:END -->
 
 ---

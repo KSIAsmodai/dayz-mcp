@@ -6,7 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-No unreleased product changes. Current published release is [v1.2](https://github.com/willy92wins/dayz-mcp/releases/tag/v1.2). The product is paused.
+Merged to `main` after [v1.2](https://github.com/willy92wins/dayz-mcp/releases/tag/v1.2) and not released yet. The deployed PBO matches `main` up to #43; the Enforce changes in #44 are not packed.
+
+### Added
+
+- `vehicle_trace` `mode=dump`: the bridge writes the canonical trace as JSONL in the profile folder (also on `stop`) instead of sending every sample over the wire; `MCP_BRIDGE_VERSION` stays `"10"` (#26).
+- `vehicle_trace` samples carry `engine_rpm`, `rpm_idle`, `engine_ready` and `throttle_set`, and `classify_14de_throttle_sample` tells an engine-ready skip from setter lag; JSON `1`/`0` count as booleans (#36, #42).
+- `dayz_test_run` results carry `caller_tool_registry_stale`; when it is true they also warn `tool_registry_stale_reopen_client` (#46).
+- New runs record `daemon_generation_at_launch`; status, box and `dayz_test_stop` report `daemon_generation_current` and `generation_changed` (#47).
+
+### Changed
+
+- `world_time_set` carries minute overflow into the hour and day, sets `ok:0` when a complete date echo mismatches, and returns `multiplier_applied=null` with `warnings=["multiplier_unconfirmed"]` because the engine exposes no multiplier getter (#35).
+- `pipeline_feedback` publishes its title, body and project length limits in `inputSchema` (#32).
+- `fixture_not_ready` from `vehicle_prepare_fixture` carries the observed fixture telemetry under `observed=` (#34).
+- The `client_policy_untrusted_open_new_session` hint says when the client registered (#46).
+- `capture_screenshot` returns `session_locked` on a locked Windows session instead of launching the grab and failing generically (#45).
+- Enforce, not packed: automatic manual-gearbox upshifts wait a 0.3 s settle interval, and `vehicle_get_in_client` seats the client in the vehicle nearest to `pos` (#44).
+- The `dayz_test_run` description states how long the call can block; the `session_release` description states that releasing never stops DayZ (#46, #47).
+
+### Fixed
+
+- Untrusted clients keep H3 reads, `server_reload` and an owned `dayz_test_stop` when policy revalidation fails, including the stop of their own idle run; authority changes stay fail-closed (#30, #43).
+- A bare `ClientRuntime` defaults to rejecting a stale policy (BUG-037) (#37).
+- Native job cleanup no longer fails with `native_job_cleanup_incomplete:active_zero_wait_timed_out` when the second wait already ran and no handle remains open (#40, #41).
+- `python -m dayz_mcp.doctor` parses supervised registrations and `--exec-audit-path` again, so it checks the daemon instead of reporting CONFIG_UNREADABLE. The audit path is now compared as part of the daemon policy (#48).
+
+### Security
+
+- Strings from identities or persisted state that reach MCP payloads (the registration stamp, daemon generations, stop-envelope state and reason) are echoed only when they match a closed shape (#46, #47).
+
+Test, documentation and proposal PRs (#24, #25, #27, #28, #29, #31, #33, #38, #39) are not listed.
 
 ## [1.2] - 2026-09-12
 
