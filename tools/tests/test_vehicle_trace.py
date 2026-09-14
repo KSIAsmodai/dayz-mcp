@@ -455,6 +455,14 @@ class VehicleTraceValidationTest(unittest.TestCase):
             "applied",
         )
 
+        invalid = dict(live_sample_35)
+        invalid["control_active"] = 2
+        self.assertEqual(
+            vehicle_trace.classify_14de_throttle_sample(invalid),
+            "no_control",
+        )
+        self.assertIs(invalid["control_active"], 2)
+
     def test_named_negative_mutations_are_not_false_green(self) -> None:
         fixture = _load_json(FIXTURE_DIR / "negative_mutations.json")
         for mutation in fixture["mutations"]:
