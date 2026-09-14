@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import threading
 import time
 import uuid
@@ -18,6 +19,13 @@ from dayz_mcp.daemon_policy_contract import AccreditedDaemonPolicy
 
 
 _monotonic = time.monotonic
+
+# The untrusted rejection hint crosses the MCP wire, so the registration stamp is
+# echoed only in its canonical UTC shape: ASCII digits and ISO separators, nothing
+# else. A parser is not a filter: datetime.fromisoformat accepts any separator.
+_REGISTERED_AT_UTC = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z"
+)
 
 # H14 skips policy.revalidate() by verb, not by wall-clock. The MCP tool
 # session_acquire_wait is never on these lists; owned dayz_test_stop may
@@ -240,6 +248,13 @@ class ControlClient:
         except Exception as exc:
             if not allow_stale_policy:
                 policy_cause = _policy_revalidation_cause(exc)
+                registered = ""
+                try:
+                    started = getattr(self.identity, "started_at_utc", None)
+                    if isinstance(started, str) and _REGISTERED_AT_UTC.fullmatch(started):
+                        registered = f"client registered at {started}. "
+                except Exception:
+                    registered = ""
                 raise ControlClientError(
                     "client_policy_untrusted_open_new_session",
                     request_stage="pre_request",
@@ -248,6 +263,7 @@ class ControlClient:
                     hint=(
                         # The MCP adapter publishes code/hint, not exception metadata.
                         f"policy_cause={policy_cause}. "
+                        f"{registered}"
                         "If the tool list includes server_reload, call it: it replaces "
                         "the serving process, which re-reads the registration and "
                         "re-accredits. Otherwise report this policy rejection to the "

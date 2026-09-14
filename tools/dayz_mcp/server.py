@@ -3494,6 +3494,36 @@ def _failed_active_run_result(
     )
 
 
+_TOOL_REGISTRY_STALE_WARNING = "tool_registry_stale_reopen_client"
+
+
+def _annotate_caller_tool_registry(
+    payload: dict[str, Any], stale: bool
+) -> dict[str, Any]:
+    payload["caller_tool_registry_stale"] = bool(stale)
+    if not stale:
+        return payload
+    warnings = payload.get("warnings")
+    if isinstance(warnings, list):
+        warnings = list(warnings)
+    else:
+        warnings = []
+    if _TOOL_REGISTRY_STALE_WARNING not in warnings:
+        warnings.append(_TOOL_REGISTRY_STALE_WARNING)
+    payload["warnings"] = warnings
+    return payload
+
+
+async def _observe_caller_tool_registry_stale(
+    observe: Callable[[], dict[str, Any]],
+) -> bool:
+    try:
+        snapshot = await asyncio.to_thread(observe)
+        return source_stale(snapshot)
+    except Exception:
+        return True
+
+
 async def _heartbeat_box_claim(
     client: Any,
     ticket: str,
@@ -4008,7 +4038,10 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "DayZDiag does not honor them as the render viewport "
             "(profile/DPI win; 1280x720 measured as 846x461). Workaround: "
             "SetWindowPos host-side, then ui_reload_layout to re-measure "
-            "without reboot."
+            "without reboot. The call blocks for up to wait_for_box_s plus "
+            "the launch, so a client whose own tool-call timeout is shorter "
+            "(Antigravity CLI cuts MCP calls at 180 s) must pass a smaller "
+            "wait_for_box_s and repeat the call."
         )
     )
     async def dayz_test_run(
@@ -4036,6 +4069,13 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         client_start_budget_s: StrictFloat | StrictInt | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
+        caller_stale = await _observe_caller_tool_registry_stale(
+            observe_server_sources
+        )
+
+        def annotated(payload: dict[str, Any]) -> dict[str, Any]:
+            return _annotate_caller_tool_registry(payload, caller_stale)
+
         # Both parses run BEFORE the box queue: a request that is already
         # invalid must not be able to take a queue slot, hold the tool lock or
         # come back as box_queue_saturated with its real defect never reported.
@@ -4074,7 +4114,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                     if waited.get("error") == "box_queue_saturated":
                         failed["error_code"] = "box_queue_saturated"
                         failed["hint"] = "retry with wait_for_box_s=<n>"
-                    return failed
+                    return annotated(failed)
                 if box_ticket:
                     claim_task = asyncio.create_task(
                         _heartbeat_box_claim(client, box_ticket)
@@ -4097,13 +4137,15 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                     box, caller_session=caller_session
                 )
                 if target is not None and not takeover:
-                    return _failed_active_run_result(
-                        project=project,
-                        mode=mode,
-                        box=box,
-                        started=started,
-                        caller_session=caller_session,
-                        port=port,
+                    return annotated(
+                        _failed_active_run_result(
+                            project=project,
+                            mode=mode,
+                            box=box,
+                            started=started,
+                            caller_session=caller_session,
+                            port=port,
+                        )
                     )
                 if target is not None and takeover:
                     try:
@@ -4118,7 +4160,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                         isinstance(stop_result, dict)
                         and stop_result.get("status") == "failed"
                     ):
-                        return stop_result
+                        return annotated(stop_result)
                     evicted_run_id = target
                 try:
                     with _typed_dayz_test_value_errors():
@@ -4160,30 +4202,34 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                     raise ToolError(_opaque_dayz_test_failure(exc)) from exc
             if execute_error is not None:
                 if execute_error.code == "active_run_exists":
-                    return _failed_active_run_result(
-                        project=project,
-                        mode=mode,
-                        box=await peek_box(),
-                        started=started,
-                        caller_session=caller_session,
-                        port=port,
+                    return annotated(
+                        _failed_active_run_result(
+                            project=project,
+                            mode=mode,
+                            box=await peek_box(),
+                            started=started,
+                            caller_session=caller_session,
+                            port=port,
+                        )
                     )
                 raise ToolError(execute_error.code) from None
             if (
                 isinstance(result, dict)
                 and result.get("error_code") == "active_run_exists"
             ):
-                return _enrich_active_run_result(
-                    result,
-                    await peek_box(),
-                    caller_session=caller_session,
-                    port=port,
+                return annotated(
+                    _enrich_active_run_result(
+                        result,
+                        await peek_box(),
+                        caller_session=caller_session,
+                        port=port,
+                    )
                 )
             if result is None:
                 raise ToolError("dayz_test_failed:RuntimeError")
             if evicted_run_id is not None:
                 result["evicted_run_id"] = evicted_run_id
-            return result
+            return annotated(result)
         finally:
             if claim_task is not None:
                 claim_task.cancel()
