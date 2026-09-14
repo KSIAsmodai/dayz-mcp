@@ -3917,7 +3917,12 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         async with client.tool_lock:
             return await client.session_heartbeat(lease_token)
 
-    @app.tool(description="Release this client's active lease and run bounded cleanup.")
+    @app.tool(
+        description=(
+            "Release this client's active lease and run bounded cleanup. "
+            "Runs listed in cleanup.runs_released stay alive as ownerless RUNNING_IDLE; releasing never stops DayZ; use dayz_test_stop to stop a run."
+        )
+    )
     async def session_release(lease_token: str) -> dict[str, Any]:
         if not isinstance(lease_token, str) or not lease_token:
             raise ToolError("bad_lease_token")

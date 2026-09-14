@@ -174,8 +174,11 @@ class H8DistributedGateTests(unittest.TestCase):
                     final_status,
                 ]
             )
+            key_path = gate_dir / "hermetic.key"
+            key_path.write_text("hermetic-fixture-key", encoding="utf-8")
 
             with (
+                patch.object(gate, "KEYFILE", key_path),
                 patch.object(
                     gate,
                     "_new_proxy",

@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import threading
 import time
@@ -285,9 +286,14 @@ def _activity_from_snapshot(
     return "stale", round(age, 3)
 
 
+# Generation ids are minted as uuid4().hex and projections and stop envelopes publish
+# them on the MCP wire; a persisted value outside this token is reported as unknown.
+_GENERATION_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
 def _generation_projection(run: RunRecord, current: str) -> dict[str, object]:
     launch = getattr(run, "daemon_generation_at_launch", None)
-    if not isinstance(launch, str) or not launch:
+    if not isinstance(launch, str) or not _GENERATION_TOKEN.fullmatch(launch):
         launch = None
     current_value = current if isinstance(current, str) else ""
     changed = None if launch is None else launch != current_value
