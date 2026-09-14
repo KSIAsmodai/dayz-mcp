@@ -11,6 +11,10 @@ class MCPCarDrive
 	// "SetThrottle was not called" from "GetThrottle still reads 0".
 	static bool s_TickEngineReady;
 	static bool s_TickThrottleSet;
+	// Seconds between automatic ShiftUp calls. Stops a burst of upshifts
+	// while rpm remains above the redline threshold.
+	static const float AUTO_SHIFT_SETTLE_S = 0.3;
+	static float s_LastAutoShiftS;
 
 	static void Set(CarScript car, float throttle, float steer, float brake, float handbrake, float deadlineS)
 	{
@@ -29,6 +33,7 @@ class MCPCarDrive
 		s_Car = null;
 		s_TickEngineReady = false;
 		s_TickThrottleSet = false;
+		s_LastAutoShiftS = -1.0;
 	}
 }
 
@@ -743,7 +748,12 @@ modded class CarScript
 					{
 						if (throttle > 0.1)
 						{
-							ShiftUp();
+							float nowS = GetGame().GetTickTime();
+							if (MCPCarDrive.s_LastAutoShiftS < 0.0 || nowS - MCPCarDrive.s_LastAutoShiftS >= MCPCarDrive.AUTO_SHIFT_SETTLE_S)
+							{
+								ShiftUp();
+								MCPCarDrive.s_LastAutoShiftS = nowS;
+							}
 						}
 					}
 					else if (GetGear() < CarGear.FIRST || (throttle > 0.0 && spd < 5.0))

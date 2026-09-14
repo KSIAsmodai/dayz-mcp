@@ -5452,6 +5452,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         description=(
             "Requires a lease (session_acquire_wait). Seat the connected "
             "client in a nearby vehicle (client-side ownership get-in). "
+            "Seats the client in the vehicle nearest to pos within the search radius. "
             "This is client ownership for engine_set, vehicle_control, and "
             "vehicle_trace; it does not place the player in the server crew. "
             "ActionCondition gates such as ActionSwitchLights still fail "
