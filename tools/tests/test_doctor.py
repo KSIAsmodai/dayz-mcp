@@ -407,6 +407,54 @@ class DoctorTest(unittest.TestCase):
                 self.assertEqual(exit_code, 1)
                 self.assertIn("DAEMON_STATUS_UNREADABLE", self.codes(payload))
 
+    def test_fb_4554_supervised_registrations_reach_the_daemon_checks(self) -> None:
+        claude = CLAUDE_GOOD.replace("--client ", "--client --supervised ")
+        self.assertIn("--supervised", claude)
+        codex = codex_config(
+            "-m",
+            "dayz_mcp",
+            "--client",
+            "--supervised",
+            "--keyfile",
+            "C:\\DayZ MCP\\shared.key",
+            "--port",
+            "8765",
+            "--client-platform",
+            "codex",
+        )
+        registrations = {
+            "claude_config": lambda: (0, claude),
+            "codex_config": lambda: (0, codex),
+        }
+
+        payload, exit_code = self.execute(**registrations)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["findings"], [])
+
+        status = clean_status()
+        status["credential_recovery"] = {
+            "recovered_count": 1,
+            "recent": True,
+            "last_recovered_age_s": 1.0,
+            "unexpected": "field",
+        }
+        payload, exit_code = self.execute(
+            daemon_status=lambda _port, _key: status, **registrations
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertNotIn("CONFIG_UNREADABLE", self.codes(payload))
+        self.assertIn("DAEMON_STATUS_UNREADABLE", self.codes(payload))
+
+    def test_fb_4554_doctor_parses_every_option_host_config_registers(self) -> None:
+        module = self.require_doctor()
+        host_config = importlib.import_module("dayz_mcp.host_config")
+        self.assertEqual(
+            set(), set(host_config._VALUE_OPTIONS) - set(module._VALUE_OPTIONS)
+        )
+        self.assertEqual(
+            set(), set(host_config._BOOLEAN_OPTIONS) - set(module._BOOLEAN_OPTIONS)
+        )
+
     def test_missing_client_or_embedded_registration_is_config_embedded(self) -> None:
         for platform, value in (
             ("claude", CLAUDE_GOOD.replace("--client ", "--embedded ")),
@@ -853,6 +901,87 @@ class DoctorTest(unittest.TestCase):
         )
         self.assertEqual(exit_code, 0)
         self.assertEqual(self.codes(payload), [])
+
+    def test_fb_4554_every_forwarded_option_reaches_the_daemon_checks(self) -> None:
+        from types import SimpleNamespace
+
+        daemon_contract = importlib.import_module("dayz_mcp.daemon_contract")
+        config = SimpleNamespace(
+            port=8765,
+            keyfile="C:\\DayZ MCP\\shared.key",
+            expected_game_version="1.29",
+            require_version=True,
+            idle_timeout_s=12.0,
+            enable_exec_enforce=True,
+            exec_allowlist="C:\\DayZ MCP\\allow.json",
+            exec_audit_path="C:\\DayZ MCP\\audit.jsonl",
+        )
+        listener = daemon_contract.build_daemon_argv(
+            config, python="C:\\Python\\python.exe"
+        )
+        self.assertEqual(
+            listener[:4], ["C:\\Python\\python.exe", "-m", "dayz_mcp", "--daemon"]
+        )
+        forwarded = listener[4:]
+        self.assertIn("--exec-audit-path", forwarded)
+
+        def registrations(claude_forwarded: list[str]) -> dict[str, object]:
+            claude_args = " ".join(
+                ["-m", "dayz_mcp", "--client", "--supervised", *claude_forwarded]
+            )
+            claude = (
+                "dayz-mcp:\n"
+                "  Type: stdio\n"
+                "  Command: C:\\Python\\python.exe\n"
+                f"  Args: {claude_args} --client-platform claude\n"
+            )
+            codex = codex_config(
+                "-m", "dayz_mcp", "--client", "--supervised", *forwarded,
+                "--client-platform", "codex",
+            )
+            return {
+                "claude_config": lambda: (0, claude),
+                "codex_config": lambda: (0, codex),
+            }
+
+        status_calls: list[tuple[int, str]] = []
+
+        def status(port: int, keyfile: str) -> dict[str, object]:
+            status_calls.append((port, keyfile))
+            return clean_status()
+
+        payload, exit_code = self.execute(
+            process_argv=lambda _pid: list(listener),
+            daemon_status=status,
+            **registrations(forwarded),
+        )
+        self.assertEqual(self.codes(payload), [])
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(status_calls)
+
+        other_audit = "C:\\DayZ MCP\\other-audit.jsonl"
+        moved = [other_audit if value == config.exec_audit_path else value for value in listener]
+        status_calls.clear()
+        payload, exit_code = self.execute(
+            process_argv=lambda _pid: moved,
+            daemon_status=status,
+            **registrations(forwarded),
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertIn("PROCESS_SCAN_FAILED", self.codes(payload))
+        self.assertEqual(status_calls, [])
+
+        claude_elsewhere = [
+            other_audit if value == config.exec_audit_path else value
+            for value in forwarded
+        ]
+        payload, exit_code = self.execute(
+            process_argv=lambda _pid: list(listener),
+            daemon_status=status,
+            **registrations(claude_elsewhere),
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertIn("CONFIG_MISMATCH", self.codes(payload))
 
     def test_partial_coordination_status_is_unreadable(self) -> None:
         status = {"coordination": {"captured_at_monotonic": 100.0}}
