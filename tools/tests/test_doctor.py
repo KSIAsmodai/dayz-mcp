@@ -248,10 +248,94 @@ class DoctorTest(unittest.TestCase):
             payload,
             {
                 "ok": True,
-                "findings": [],
+                "findings": [
+                    {
+                        "code": "DAEMON_STATUS_OK",
+                        "severity": "INFO",
+                        "port": 8765,
+                        "pid": 700,
+                    }
+                ],
                 "summary": {"fail": 0, "warn": 0},
             },
         )
+
+    def test_fb_0e4c_healthy_daemon_publishes_status_ok(self) -> None:
+        payload, exit_code = self.execute()
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["summary"], {"fail": 0, "warn": 0})
+        self.assertEqual(
+            payload["findings"],
+            [
+                {
+                    "code": "DAEMON_STATUS_OK",
+                    "severity": "INFO",
+                    "port": 8765,
+                    "pid": 700,
+                }
+            ],
+        )
+
+    def test_fb_0e4c_require_clean_keeps_exit_zero_on_healthy_run(self) -> None:
+        payload, exit_code = self.execute(require_clean=True)
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["summary"], {"fail": 0, "warn": 0})
+        self.assertEqual(self.codes(payload), ["DAEMON_STATUS_OK"])
+
+    def test_fb_0e4c_coordination_or_credential_finding_omits_status_ok(
+        self,
+    ) -> None:
+        status_fault = clean_status()
+        status_fault["coordination"]["claimable"] = False
+        status_fault["coordination"]["audit_fault"] = public_audit_fault()
+        status_recovery = clean_status()
+        status_recovery["credential_recovery"] = {
+            "recovered_count": 3,
+            "recent": True,
+            "last_recovered_age_s": 1.25,
+        }
+        cases = (
+            ("coordination", status_fault, "COORDINATION_AUDIT_FAULT", 1),
+            ("credential", status_recovery, "STALE_CLIENT_CREDENTIAL_RECOVERED", 0),
+        )
+        for name, status, expected, expected_exit in cases:
+            with self.subTest(name=name):
+                payload, exit_code = self.execute(
+                    daemon_status=lambda _port, _key, status=status: status
+                )
+                self.assertEqual(exit_code, expected_exit)
+                self.assertIn(expected, self.codes(payload))
+                self.assertNotIn("DAEMON_STATUS_OK", self.codes(payload))
+
+    def test_fb_0e4c_unread_or_unparsed_daemon_omits_status_ok(self) -> None:
+        cases = (
+            (
+                "missing_listener",
+                {"listener_pid": lambda _port: None},
+                "DAEMON_STATUS_UNREADABLE",
+            ),
+            (
+                "unreadable_status",
+                {"daemon_status": lambda _port, _key: "not-a-status"},
+                "DAEMON_STATUS_UNREADABLE",
+            ),
+            (
+                "unparseable_registrations",
+                {
+                    "claude_config": lambda: (0, "not-a-registration"),
+                    "codex_config": lambda: (0, "not-json"),
+                },
+                "CONFIG_UNREADABLE",
+            ),
+        )
+        for name, overrides, expected in cases:
+            with self.subTest(name=name):
+                payload, exit_code = self.execute(**overrides)
+                self.assertEqual(exit_code, 1)
+                self.assertIn(expected, self.codes(payload))
+                self.assertNotIn("DAEMON_STATUS_OK", self.codes(payload))
 
     def test_current_key_401_is_daemon_credential_desynchronized(self) -> None:
         module = self.require_doctor()
@@ -364,7 +448,17 @@ class DoctorTest(unittest.TestCase):
             daemon_status=lambda _port, _key: clean_status()
         )
         self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["findings"], [])
+        self.assertEqual(
+            payload["findings"],
+            [
+                {
+                    "code": "DAEMON_STATUS_OK",
+                    "severity": "INFO",
+                    "port": 8765,
+                    "pid": 700,
+                }
+            ],
+        )
 
     def test_invalid_credential_recovery_schema_is_unreadable(self) -> None:
         variants = (
@@ -429,7 +523,17 @@ class DoctorTest(unittest.TestCase):
 
         payload, exit_code = self.execute(**registrations)
         self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["findings"], [])
+        self.assertEqual(
+            payload["findings"],
+            [
+                {
+                    "code": "DAEMON_STATUS_OK",
+                    "severity": "INFO",
+                    "port": 8765,
+                    "pid": 700,
+                }
+            ],
+        )
 
         status = clean_status()
         status["credential_recovery"] = {
@@ -535,7 +639,13 @@ class DoctorTest(unittest.TestCase):
                         "is invalid. Read the platform config file directly before "
                         "changing anything; do not re-register."
                     ),
-                }
+                },
+                {
+                    "code": "DAEMON_STATUS_OK",
+                    "severity": "INFO",
+                    "port": 8765,
+                    "pid": 700,
+                },
             ],
         )
         self.assertNotIn("CONFIG_UNREADABLE", self.codes(payload))
@@ -900,7 +1010,7 @@ class DoctorTest(unittest.TestCase):
             process_argv=lambda _pid: daemon_argv(listener),
         )
         self.assertEqual(exit_code, 0)
-        self.assertEqual(self.codes(payload), [])
+        self.assertEqual(self.codes(payload), ["DAEMON_STATUS_OK"])
 
     def test_fb_4554_every_forwarded_option_reaches_the_daemon_checks(self) -> None:
         from types import SimpleNamespace
@@ -955,7 +1065,7 @@ class DoctorTest(unittest.TestCase):
             daemon_status=status,
             **registrations(forwarded),
         )
-        self.assertEqual(self.codes(payload), [])
+        self.assertEqual(self.codes(payload), ["DAEMON_STATUS_OK"])
         self.assertEqual(exit_code, 0)
         self.assertTrue(status_calls)
 
@@ -1107,7 +1217,7 @@ class DoctorTest(unittest.TestCase):
         ]
         payload, exit_code = self.execute(daemon_status=lambda _port, _key: status)
         self.assertEqual(exit_code, 0)
-        self.assertEqual(self.codes(payload), [])
+        self.assertEqual(self.codes(payload), ["DAEMON_STATUS_OK"])
 
     def test_public_coordination_fault_is_distinct_fail_finding(self) -> None:
         status = clean_status()
@@ -1235,10 +1345,11 @@ class DoctorTest(unittest.TestCase):
         strict, strict_exit = self.execute(process_snapshot=snapshot, require_clean=True)
         self.assertEqual((normal_exit, normal["ok"]), (0, True))
         self.assertEqual((strict_exit, strict["ok"]), (1, False))
-        self.assertEqual(normal["findings"][0]["code"], "RETAIL_MANUAL_CLOSE_REQUIRED")
-        self.assertEqual(normal["findings"][0]["severity"], "WARN")
-        self.assertEqual(strict["findings"][0]["severity"], "FAIL")
-        self.assertEqual(normal["findings"][0]["processes"][0]["pid"], 41)
+        self.assertEqual(normal["findings"][0]["code"], "DAEMON_STATUS_OK")
+        self.assertEqual(normal["findings"][1]["code"], "RETAIL_MANUAL_CLOSE_REQUIRED")
+        self.assertEqual(normal["findings"][1]["severity"], "WARN")
+        self.assertEqual(strict["findings"][1]["severity"], "FAIL")
+        self.assertEqual(normal["findings"][1]["processes"][0]["pid"], 41)
         self.assertNotIn("PROCESS_UNREGISTERED", self.codes(normal))
 
     def test_unknown_toolhelp_snapshot_is_never_clean(self) -> None:
@@ -1318,7 +1429,7 @@ class DoctorTest(unittest.TestCase):
             process_snapshot=snapshot,
             process_identity=lambda pid: {**record, "identity_complete": True},
         )
-        self.assertEqual((clean_exit, self.codes(clean)), (0, []))
+        self.assertEqual((clean_exit, self.codes(clean)), (0, ["DAEMON_STATUS_OK"]))
 
         mismatch, mismatch_exit = self.execute(
             process_snapshot=snapshot,
