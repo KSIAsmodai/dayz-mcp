@@ -1,38 +1,44 @@
 # HANDOFF — DayZ-MCP
 
 <!-- LIVE-STATE:START -->
-# DayZ-MCP — Estado vivo · snapshot 2026-09-14 (tras la segunda promoción)
+# DayZ-MCP — Estado vivo · snapshot 2026-09-14 (tras la tercera promoción)
 
-**Última verificación real:** 2026-09-14 18:49.
-- **Árbol vivo `P:\DayZ_MCP_dev`:** `main` con el código de `6e51232` (Ola 1, PRs #44–#49). Fast-forward desde `1bad174` a las 18:43.
-- **Daemon:** reiniciado a las 18:43 con el argv canónico. Generación `f91c9a0d…`, `daemon_modules.stale=[]`, caja vacía.
-- **Suite del `main` combinado antes de promover:** `Ran 3690 tests`, `OK (skipped=55)`, 0 rojos.
-- **PBO desplegado:** `F77AAC3E…`, idéntico a `1bad174` en sus 13 entradas; la promoción no lo toca. #44 cambia Enforce (`MCP_CarScript.c`, `MCPClientBridge.c`) y **está sin empaquetar**.
+**Última verificación real:** 2026-09-14 22:28.
+- **Árbol vivo `P:\DayZ_MCP_dev`:** `main` en `9a44ef9`. Fast-forward a `346e3ad` (PRs #51–#53) a las 22:15 y a `9a44ef9` (#54, solo Enforce y tests, sin efecto en el daemon) hacia las 22:27.
+- **Daemon:** reiniciado a las 22:15 con el argv canónico. Generación `00b35adf…`, `daemon_modules.stale=[]`, caja vacía.
+- **Suite sobre el árbol de `346e3ad`:** `Ran 3715 tests`, 0 rojos. Es la del regate de la ronda 4 de la `160e`; `git diff --quiet 11e1ef8 346e3ad` confirma que el árbol es el mismo.
+- **PBO desplegado:** `F77AAC3E…`, idéntico a `1bad174` en sus 13 entradas. #44 y #54 cambian Enforce y **están sin empaquetar**. El build espera a que la caja quede libre: a las 22:21 `@LFPowerGrid` lanzó el run `5c6139b9`, que figura RUNNING_IDLE sin dueño y mantiene bloqueado el PBO.
 
-bugs: tracker = buzón `pipeline_inbox` · **22** abiertas (censo 2026-09-14 18:49: 25 − 4 resueltas tras la promoción + la nueva `0e4c`) · toque 2026-09-14
-ciclos_en_este_objetivo: 1 (triaje del buzón + promoción + Ola 1 + segunda promoción)
+bugs: tracker = buzón `pipeline_inbox` · **21** abiertas (censo 2026-09-14 22:22: 22 + 3 nuevas, `305a`, `88ef` y `e4be`, − 4 resueltas, `160e`, `6553`, `0e4c` y `5dbe`) · toque 2026-09-14
+ciclos_en_este_objetivo: 1 (triaje del buzón + promoción + Ola 1 + segunda promoción + 160e y delegables + tercera promoción)
 
 ## Estado actual
 
-- **Ola 1 en vivo desde las 18:43.** Se hizo por lanes Grok 4.6/Cursor en worktrees, con gates-ledger y review Codex `gpt-5.6-sol`:
-  - **#44** `deb9` + `07a1`: settle de ShiftUp y get-in al coche más cercano. Enforce sin empaquetar; queda G7 in-game.
-  - **#45** `6d18` + `c12b`: `session_locked` en captura y nota de 20 fps sin foco.
-  - **#46** `050e` + `145c`: fecha del registro en el rechazo untrusted (lista blanca de sello UTC); aviso `caller_tool_registry_stale` en `dayz_test_run`.
-  - **#47** `7ef2` + `dff2`: generación del daemon cableada al lifecycle; filtro de token para generaciones en el wire; `session_release` documentado.
-  - **#48** `4554`: el doctor vuelve a parsear `--supervised`/`--exec-audit-path` y a comprobar el daemon.
-- **Doctor tras la segunda promoción** (`--daemon-policy normal`): sin `CONFIG_UNREADABLE`. Queda un FAIL, `RUN_PREPRUNE_BACKUP_SLOTS_EXHAUSTED` (ficha `160e`), y un WARN, `KNOWLEDGE_PACK_MISSING`.
-- **Clientes MCP abiertos antes de las 18:43:** su registro de tools está stale (`tool_registry_schema_signal=stale_client`). Cada sesión reabre su cliente antes de mutar; se avisó a las tres sesiones abiertas.
-- **Buzón triado** el 2026-09-14 (`reviews/triage-20260914-agy/RESUMEN.md`, sin versionar).
+- **Tercera promoción en vivo desde las 22:15:**
+  - **#51** `6553`: el test del writer de audit es hermético (solo tests).
+  - **#52** `0e4c`: el doctor publica `DAEMON_STATUS_OK` (INFO) cuando comprueba el daemon sin hallazgos.
+  - **#53** `160e`: retención de las copias de manifest. Se conservan las 200 más nuevas y las que nombran el puntero o un fault; la poda hace como mucho 128 intentos por checkpoint, bajo el lock del store. Añade el WARN `MANIFEST_BACKUP_RETENTION_STALLED`.
+- **Doctor tras la tercera promoción** (`--daemon-policy normal`): `ok=true` y 0 FAIL.
+  - `DAEMON_STATUS_OK` presente.
+  - WARN `MANIFEST_BACKUP_RETENTION_STALLED`: 8684 copias. Seguirá mientras el backlog pase de 400, unos 68 checkpoints.
+  - WARN `KNOWLEDGE_PACK_MISSING`.
+- **Archivo previo a la poda:** `%LOCALAPPDATA%\DayZ_MCP\_preprune-archive\20260914\` guarda los 10 slots y un tar.xz con índice de las 8812 copias.
+- **Clientes MCP abiertos antes de las 22:15:** su registro de tools está stale. `server_reload` lo refresca y conserva el lease (verificado, `5dbe`). Se avisó a las tres sesiones abiertas.
+- **Ola 1 (#44–#49)** sigue en vivo desde la segunda promoción. #44 (`deb9` + `07a1`) está sin empaquetar, y **#54** (`9a44ef9`) le corrige los P2 1-2 de Enforce: el sello del settle empieza en -1.0, se reinicia en cada drive y un reloj que retrocede no lo bloquea. Review Codex: APROBAR, con dos P2 aceptados.
 
 ## Tickets
 
 GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido del buzón en commits). El tracker real es el buzón (`pipeline_inbox` / `pipeline_feedback` / `pipeline_resolve`) en `%LOCALAPPDATA%\DayZ_MCP\inbox\feedback.jsonl`, con ids `fb-AAAAMMDD-HHMMSS-xxxx` citados por sufijo.
 
-- **Resueltas tras la segunda promoción:** `050e`, `145c` (su resto sigue en `2223`), `c12b` y `4554`. Puntero local de evidencia, sin versionar: `reviews/ola1-2026-09-14/EVIDENCE.md`.
+- **Resueltas tras la tercera promoción:**
+  - `160e`, `6553` y `0e4c`. Puntero local de evidencia, sin versionar: `reviews/delegables-2026-09-14/EVIDENCE.md`.
+  - `5dbe`: el reciclo con lease vivo, verificado en vivo.
+- **`c261`:** con seguimiento añadido. El runbook de sesión ya nombra `server_reload`; falta observar la recuperación desde un rechazo untrusted real.
 - **Cerrar tras G7 in-game:** `deb9`, `07a1`.
 - **Nuevas sin resolver:**
-  - `6553`: test inestable del writer de audit. El hilo con budget compite con `rmtree` y puede poner rojo un G3 sin regresión real; hay que hacerlo hermético.
-  - `0e4c`: con el daemon sano, el doctor no publica nada sobre él, así que «sin hallazgos» no distingue «comprobado» de «no comprobado». Propone un INFO `DAEMON_STATUS_OK`.
+  - `e4be`: borrar relativo a un handle (ctypes) para cerrar la ventana TOCTOU de la poda.
+  - `88ef`: en Windows, un lector con un fichero de runtime abierto hace fallar el `os.replace` atómico del daemon (medido, winerror 5).
+  - `305a`: un `manifest.bin` truncado por un crash hace fallar `create_manifest_backup` y bloquea el arranque.
 - **Abiertas con resto:**
   - `7ef2`: rastro de runs huérfanos en `session_status`.
   - `dff2`: runbook y causa real de la muerte.
@@ -40,14 +46,13 @@ GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido 
 
 ## Próxima acción
 
-1. **Dueño, ficha `160e`:** archivar los 10 slots `runs.json.bak-preprune*` (precedente `_preprune-archive\20260816\`) y fijar retención para `lifecycle-recovery-faults\backups` (8766 copias, 1,1 GB). Es el único FAIL que queda en el doctor.
-2. **Ola 2 in-game con el dueño:**
-   - build del PBO con #44 y G7 de `deb9`/`07a1`, más sus 5 P2 de review;
-   - WF §6: G3 GREEN, freecam→get-in / BUG-040, `b1ff` I1, time/weather, BUG-069/083/113/096;
-   - B3 #6: `c261`, `3bb4`, `5dbe`, `1f21`;
-   - `f298` y `f47b`.
-3. **Sin juego, delegables:** `6553` (test hermético) y `0e4c` (INFO positivo del doctor).
-4. **Decisiones de dueño pendientes:** modelo de cola `2223`, parada ordenada `8604`, `8bc6`, PARO/PARK (`3fc1`/`dce1`/`1025`, `2edd`-1, `dae1`-1/2).
+1. **Ola 2 in-game con el dueño.** Checklist en `reviews/2026-09-14-delegables/OLA2-CHECKLIST.md` del vault.
+   - Esperar a que la caja quede libre. El run `5c6139b9` de `@LFPowerGrid` bloquea el PBO; se pidió a `lfpowergrid-dev-51` que avise cuando lo pare.
+   - Sincronizar con `deploy-addon.ps1` y empaquetar con `pack-addon.ps1 -Clear`. La fuente por defecto, `P:\DayZ_MCP`, está desfasada. Después, `pbo_provenance.py`.
+   - G7 de `deb9`/`07a1` con `CT_Sedan_P0` de `@LFCarTune`, que tiene caja manual.
+   - Resto de la sesión: G3, BUG-040, `b1ff` I1, time/weather, `3bb4`, BUG-083, `f298`, `f47b` y el canario de BUG-096. BUG-069 queda aparcado como decisión.
+2. **Sin juego:** `e4be`, `88ef` y `305a`, y los P2 3-5 de la review de `deb9` (tests Python).
+3. **Decisiones de dueño pendientes:** modelo de cola `2223`, parada ordenada `8604`, `8bc6`, PARO/PARK (`3fc1`/`dce1`/`1025`, `2edd`-1, `dae1`-1/2).
 
 ## Invariantes CERRADAS — NO retocar / NO reabrir sin ángulo nuevo
 
@@ -58,17 +63,19 @@ GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido 
 - **`world_time_set`:** `multiplier_applied=null` + `multiplier_unconfirmed` es el contrato final (D-69, #35).
 - **Códigos de stop fijados por tests:** fila presente no activa → `run_not_active`; id desconocido → `run_not_found`. `run_retired` retirado (D-70).
 - **Wire:** un texto persistido o de identidad solo sale en payloads públicos tras pasar una lista blanca de forma (sello UTC en `control_client`, token de generación en `process_lifecycle`). Un parser no es un filtro (D-70).
+- **Retención de copias de manifest (`160e`):** se conservan las 200 más nuevas y las que nombra el puntero o un fault. No se borra nada si el puntero o un fault son ilegibles o si una entrada no se puede clasificar. La ventana TOCTOU del unlink por ruta es un límite aceptado (D-72, `e4be`).
 
 ## Punteros (detalle)
 
-- Decisiones D-69, D-70 y D-71: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\decisions\decision-log.md`
-- Evidencia de la Ola 1 y de la segunda promoción (ledgers, reverify, reviews, briefs, log de la suite): `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-ola1\`
-- Sesiones: `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-triaje-promocion-ola1.md` y `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-segunda-promocion.md`
-- Runbook de promoción a vivo: `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-handoff-segunda-promocion.md`
+- Decisiones D-69 a D-72: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\decisions\decision-log.md`
+- Evidencia de la Ola 1 y de la segunda promoción: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-ola1\`
+- Evidencia de la 160e, las delegables y la tercera promoción (ledgers, reverify, reviews, archivo operativo, checklist de la Ola 2): `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-delegables\`
+- Sesiones: `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-segunda-promocion.md` y `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-tercera-promocion.md`
+- Runbook de promoción a vivo: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-delegables\promote3\RUNBOOK.md`
 - Histórico pre-v1.2: [`HANDOFF-ARCHIVE.md`](HANDOFF-ARCHIVE.md)
 - `NEXT-SESSION-PROMPT.txt` es de **22-ago** y está **obsoleto**. No usarlo.
 
-**Gate de arranque:** `Retomo DayZ-MCP desde: Ola 1 EN VIVO (#44–#49, generación f91c9a0d) · 22 fichas abiertas · próxima acción: 160e (dueño), Ola 2 in-game con el PBO de #44, y 6553/0e4c sin juego`
+**Gate de arranque:** `Retomo DayZ-MCP desde: tercera promoción EN VIVO (#51–#53, generación 00b35adf) · 21 fichas abiertas · próxima acción: caja libre → build del PBO con #44 y #54 → Ola 2 in-game`
 <!-- LIVE-STATE:END -->
 
 ---
