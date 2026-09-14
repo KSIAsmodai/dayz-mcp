@@ -45,6 +45,7 @@ _VALUE_OPTIONS = frozenset(
         "--expected-game-version",
         "--idle-timeout",
         "--exec-allowlist",
+        "--exec-audit-path",
         "--client-platform",
         "--task-label",
     }
@@ -55,6 +56,7 @@ _BOOLEAN_OPTIONS = frozenset(
         "--enable-exec-enforce",
         "--no-daemon-autospawn",
         "--client",
+        "--supervised",
         "--daemon",
         "--embedded",
     }
@@ -67,6 +69,7 @@ _DAEMON_VALUE_OPTIONS = frozenset(
         "--expected-game-version",
         "--idle-timeout",
         "--exec-allowlist",
+        "--exec-audit-path",
     }
 )
 _DAEMON_BOOLEAN_OPTIONS = frozenset(
@@ -116,6 +119,7 @@ class _DaemonPolicy:
     idle_timeout: float
     enable_exec_enforce: bool
     exec_allowlist: str | None
+    exec_audit_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -358,12 +362,16 @@ def _policy_from_options(options: dict[str, str | None]) -> _DaemonPolicy:
     allowlist = options.get("--exec-allowlist")
     if allowlist is not None:
         allowlist = os.path.normcase(os.path.normpath(allowlist))
+    audit_path = options.get("--exec-audit-path")
+    if audit_path is not None:
+        audit_path = os.path.normcase(os.path.normpath(audit_path))
     return _DaemonPolicy(
         expected_game_version=options.get("--expected-game-version"),
         require_version="--require-version" in options,
         idle_timeout=idle_timeout,
         enable_exec_enforce="--enable-exec-enforce" in options,
         exec_allowlist=allowlist,
+        exec_audit_path=audit_path,
     )
 
 
