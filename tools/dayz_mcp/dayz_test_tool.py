@@ -1738,8 +1738,18 @@ def _h14_owned_stop(runtime: _Runtime, status: object, run_id: str) -> bool:
     owner = row.get("owner_session")
     if not isinstance(owner, str) or not owner:
         owner = row.get("owner_session_id")
-    item = {"owner_session": owner if isinstance(owner, str) else None}
-    return process_lifecycle._caller_owns_run(item, _h14_caller_session(runtime))
+    if not isinstance(owner, str) or not owner:
+        owner = None
+    item = {"owner_session": owner}
+    if process_lifecycle._caller_owns_run(item, _h14_caller_session(runtime)):
+        return True
+    # Live D4: after dayz_test_run the row is RUNNING_IDLE with
+    # owner_session_id=None (RunRecord invariant). H11 stop adopts that
+    # unique ownerless row by lease, then kills it. A different owner
+    # stays fail-closed; F0 is not a lifecycle row.
+    if owner is not None:
+        return False
+    return row.get("state") in {"RUNNING_IDLE", "UNRECONCILED"}
 
 
 @contextmanager

@@ -4,12 +4,14 @@ R26 fixtures:
 - POS: exempted ControlClient lifecycle_status and credential 401 retry send HTTP
   when revalidate fails and the authority tuple is unchanged. The 401 retry
   reuses the already-emitted credential; it must not pass by tautology if the
-  keyfile rotates.
+  keyfile rotates. Live D4 shape: ownerless RUNNING_IDLE (RunRecord clears
+  owner_session_id) is H14(b) owned stop via H11 adopt-then-kill.
 - NEG: MCP session_acquire_wait stays fail-closed with http_bytes_sent=0 even
   inside stale_policy_exemption(); generic exemption does not open
-  /session/status. Authority type/tuple change stays fail-closed. Owned stop
-  may lease internally under owned_stop_kill_exemption(), including the
-  post-kill protected_release_and_verify hop. That hop runs the real
+  /session/status. Authority type/tuple change stays fail-closed. A foreign
+  owner stays fail-closed. Owned stop may lease internally under
+  owned_stop_kill_exemption(), including the post-kill
+  protected_release_and_verify hop. That hop runs the real
   execute_secure_launcher_request forward of control_client and the MCP
   tool_lock shared by dayz_test_stop / session_status / session_acquire_wait.
 - INCONCLUSO: in-game idle-timeout at ~20 min (c261). Not simulated here.
@@ -624,6 +626,125 @@ class _H14Control:
             self.kill = previous
 
 
+async def _mcp_untrusted_dayz_test_stop(run: dict[str, object]):
+    """MCP dayz_test_stop while policy.revalidate() already fails.
+
+    Live D4 shape uses ownerless RUNNING_IDLE. Returns result dict on
+    success or the raised BaseException, plus request paths and native
+    launch count. Goes red if owned untrusted stop is fail-closed.
+    """
+    control = importlib.import_module("dayz_mcp.control_client")
+    requests: list[str] = []
+    operation_id = "11111111-1111-4111-8111-111111111111"
+    native_launches = 0
+    outcome: object = None
+
+    with tempfile.TemporaryDirectory() as temporary:
+        sealed = _h14_stop_workspace(Path(temporary))
+        run = dict(run)
+        run.setdefault("mod", "@" + sealed.policy.mod)
+
+        def request(**kwargs: object) -> tuple[int, bytes]:
+            path = str(kwargs["path"])
+            requests.append(path)
+            if path == "/lifecycle/status":
+                return 200, json.dumps({"runs": [run]}).encode("ascii")
+            if path == "/session/enqueue":
+                return 200, json.dumps(
+                    {
+                        "status": "queued",
+                        "ticket": "ticket-h14",
+                        "position": 1,
+                        "operation_id": operation_id,
+                    }
+                ).encode("ascii")
+            if path == "/session/wait":
+                return 200, json.dumps(
+                    {
+                        "status": "active",
+                        "ticket": "ticket-h14",
+                        "lease_token": "lease-h14",
+                        "lease_id": "id-h14",
+                        "operation_id": operation_id,
+                    }
+                ).encode("ascii")
+            if path == "/session/release":
+                return 200, b'{"status":"released"}'
+            if path == "/session/heartbeat":
+                return 200, b'{"status":"active"}'
+            if path == "/session/status":
+                return 200, _TERMINAL_SESSION_STATUS
+            return 200, b'{"runs":[]}'
+
+        keyfile = Path(temporary) / "daemon.key"
+        keyfile.write_text("fixture-key\n", encoding="utf-8")
+        http_policy = _policy(keyfile)
+        client = control.ControlClient(
+            policy=http_policy, identity=_identity(control, "h14-idle-untrusted")
+        )
+        object.__setattr__(http_policy, "_revalidation_hook", _fail_after(0))
+        runtime = _H14ClientRuntime(
+            control=client,
+            daemon_policy=_policy(keyfile),
+            identity=types.SimpleNamespace(session_id=_CALLER_SESSION),
+        )
+        config = server.ServerConfig(
+            mode="client",
+            key="fixture-key",
+            port=8765,
+            client_platform="unknown",
+            auto_spawn_daemon=False,
+            log_sink=lambda _message: None,
+        )
+        with patch.object(server, "ClientRuntime", return_value=runtime):
+            app, _built = server.build_app(config)
+        stop_fn = app._tool_manager.get_tool("dayz_test_stop").fn
+
+        async def launch_registered_native(*_args: object, **kwargs: object) -> int:
+            nonlocal native_launches
+            native_launches += 1
+            sink = kwargs.get("output_sink")
+            if not callable(sink):
+                raise AssertionError("missing_native_output_sink")
+            sink(
+                "stdout",
+                _terminal(
+                    {
+                        "cleanup_degraded": False,
+                        "error_code": None,
+                        "exit_code": 0,
+                        "ok": True,
+                        "run_id": RUN_ID,
+                    }
+                ),
+            )
+            return 0
+
+        with patch.object(
+            dayz_test_tool, "open_approved_launcher", return_value=_Opened()
+        ), patch.object(
+            dayz_test_tool.secure_launcher,
+            "load_verified_bundle",
+            return_value=_Bundle((sealed,)),
+        ), patch.object(
+            native_launcher_backend,
+            "launch_registered_native",
+            side_effect=launch_registered_native,
+        ), patch.object(
+            control.transport,
+            "verified_daemon_http_request",
+            side_effect=request,
+        ), patch.object(
+            control.uuid, "uuid4", return_value=uuid.UUID(operation_id)
+        ):
+            try:
+                outcome = await stop_fn(run_id=RUN_ID)
+            except BaseException as error:
+                outcome = error
+
+    return outcome, requests, native_launches
+
+
 class H14NestedToolLockAstTests(unittest.TestCase):
     def test_head_mcp_tools_await_inside_client_tool_lock(self) -> None:
         for name in (
@@ -691,6 +812,61 @@ class H14NestedToolLockAstTests(unittest.TestCase):
         self.assertFalse(
             _h14_nested_mcp_tool_holds_tool_lock("session_acquire_wait", m4)
         )
+
+
+def _h14_predicate_runtime():
+    runtime = _Runtime({"runs": []})
+    runtime.identity = types.SimpleNamespace(session_id=_CALLER_SESSION)
+    return runtime
+
+
+class H14OwnedStopPredicateTests(unittest.TestCase):
+    def test_ownerless_idle_is_h14_owned_stop(self) -> None:
+        runtime = _h14_predicate_runtime()
+        status = {"runs": [{"run_id": RUN_ID, "state": "RUNNING_IDLE"}]}
+        self.assertTrue(dayz_test_tool._h14_owned_stop(runtime, status, RUN_ID))
+
+    def test_ownerless_unreconciled_is_h14_owned_stop(self) -> None:
+        runtime = _h14_predicate_runtime()
+        status = {"runs": [{"run_id": RUN_ID, "state": "UNRECONCILED"}]}
+        self.assertTrue(dayz_test_tool._h14_owned_stop(runtime, status, RUN_ID))
+
+    def test_matching_owner_is_h14_owned_stop(self) -> None:
+        runtime = _h14_predicate_runtime()
+        status = {
+            "runs": [
+                {
+                    "run_id": RUN_ID,
+                    "state": "RUNNING",
+                    "owner_session_id": _CALLER_SESSION,
+                }
+            ]
+        }
+        self.assertTrue(dayz_test_tool._h14_owned_stop(runtime, status, RUN_ID))
+
+    def test_foreign_owner_is_not_h14_owned_stop(self) -> None:
+        runtime = _h14_predicate_runtime()
+        status = {
+            "runs": [
+                {
+                    "run_id": RUN_ID,
+                    "state": "RUNNING",
+                    "owner_session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                }
+            ]
+        }
+        self.assertFalse(dayz_test_tool._h14_owned_stop(runtime, status, RUN_ID))
+
+    def test_missing_row_is_not_h14_owned_stop(self) -> None:
+        runtime = _h14_predicate_runtime()
+        self.assertFalse(
+            dayz_test_tool._h14_owned_stop(runtime, {"runs": []}, RUN_ID)
+        )
+
+    def test_ownerless_exited_is_not_h14_owned_stop(self) -> None:
+        runtime = _h14_predicate_runtime()
+        status = {"runs": [{"run_id": RUN_ID, "state": "EXITED"}]}
+        self.assertFalse(dayz_test_tool._h14_owned_stop(runtime, status, RUN_ID))
 
 
 class H14OwnedStopWiringTests(unittest.IsolatedAsyncioTestCase):
@@ -806,6 +982,59 @@ class H14OwnedStopWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(generic, [False])
         self.assertEqual(kill_path, [False])
+
+    async def test_ownerless_idle_stop_keeps_exemption_for_kill_path(self) -> None:
+        lfv = _project_policy(
+            mod="StorageMod",
+            dev_root=r"C:\Tools\LFV_D2_Executor",
+            default_source=r"C:\Tools\LFV_D2_Executor\staged-source\StorageMod",
+            default_base_mods=("@CF",),
+        )
+        run = {
+            "run_id": RUN_ID,
+            "state": "RUNNING_IDLE",
+            "mod": "@StorageMod",
+        }
+        runtime = _Runtime({"runs": [run]})
+        runtime.identity = types.SimpleNamespace(session_id=_CALLER_SESSION)
+        generic: list[bool] = []
+        kill_path: list[bool] = []
+        runtime._control = _H14Control()
+
+        async def launch(_raw_request: bytes, **kwargs: object) -> int:
+            generic.append(runtime._control.allow)
+            kill_path.append(runtime._control.kill)
+            await kwargs["execution_started_cb"]()
+            kwargs["output_sink"](
+                "stdout",
+                _terminal(
+                    {
+                        "cleanup_degraded": False,
+                        "error_code": None,
+                        "exit_code": 0,
+                        "ok": True,
+                        "run_id": RUN_ID,
+                    }
+                ),
+            )
+            return 0
+
+        with patch.object(
+            dayz_test_tool, "open_approved_launcher", return_value=_Opened()
+        ), patch.object(
+            dayz_test_tool.secure_launcher,
+            "load_verified_bundle",
+            return_value=_Bundle(_sealed(lfv)),
+        ), patch.object(
+            dayz_test_tool.secure_launcher,
+            "execute_secure_launcher_request",
+            side_effect=launch,
+        ):
+            result = await dayz_test_tool.execute_dayz_test_stop(runtime, RUN_ID)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(generic, [False])
+        self.assertEqual(kill_path, [True])
 
     async def test_owned_stop_post_kill_status_verify_does_not_reject_tool(
         self,
@@ -962,6 +1191,40 @@ class H14OwnedStopWiringTests(unittest.IsolatedAsyncioTestCase):
             "client_policy_untrusted_open_new_session", str(raised.exception)
         )
         self.assertFalse(runtime.tool_lock.locked())
+
+    async def test_owned_untrusted_stop_of_idle_run_does_not_reject_tool(
+        self,
+    ) -> None:
+        """Live D4: ownerless RUNNING_IDLE must not fail-close under stale policy."""
+        outcome, requests, native_launches = await _mcp_untrusted_dayz_test_stop(
+            {"run_id": RUN_ID, "state": "RUNNING_IDLE"}
+        )
+        self.assertIsInstance(outcome, dict)
+        self.assertEqual(outcome["status"], "succeeded")
+        self.assertEqual(native_launches, 1)
+        self.assertIn("/lifecycle/status", requests)
+        self.assertIn("/session/enqueue", requests)
+        self.assertIn("/session/wait", requests)
+        self.assertNotIn(
+            "client_policy_untrusted_open_new_session",
+            str(outcome),
+        )
+
+    async def test_foreign_untrusted_stop_stays_fail_closed(self) -> None:
+        outcome, requests, native_launches = await _mcp_untrusted_dayz_test_stop(
+            {
+                "run_id": RUN_ID,
+                "state": "RUNNING",
+                "owner_session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            }
+        )
+        self.assertIsInstance(outcome, server.ToolError)
+        self.assertIn(
+            "client_policy_untrusted_open_new_session", str(outcome)
+        )
+        self.assertEqual(native_launches, 0)
+        self.assertIn("/lifecycle/status", requests)
+        self.assertNotIn("/session/enqueue", requests)
 
 
 if __name__ == "__main__":
