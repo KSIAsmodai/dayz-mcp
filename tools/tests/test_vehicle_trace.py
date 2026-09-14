@@ -390,6 +390,71 @@ class VehicleTraceValidationTest(unittest.TestCase):
             "h4_skip",
         )
 
+    def test_14de_classifier_coerces_live_json_ints(self) -> None:
+        bool_applied = _positive_trace()["samples"][5]
+        self.assertIs(bool_applied["forced"], False)
+        self.assertIs(bool_applied["control_active"], True)
+        self.assertIs(bool_applied["engine_ready"], True)
+        self.assertIs(bool_applied["throttle_set"], True)
+        self.assertEqual(
+            vehicle_trace.classify_14de_throttle_sample(bool_applied),
+            "applied",
+        )
+
+        live_sample_35 = {
+            "forced": False,
+            "control_active": 1,
+            "engine_ready": 1,
+            "throttle_set": 1,
+            "engine_rpm": 907,
+            "rpm_idle": 900,
+            "throttle_requested": 1.0,
+            "throttle_applied": 1.0,
+        }
+        self.assertEqual(
+            vehicle_trace.classify_14de_throttle_sample(live_sample_35),
+            "applied",
+        )
+        self.assertIs(live_sample_35["control_active"], 1)
+        self.assertIs(live_sample_35["engine_ready"], 1)
+        self.assertIs(live_sample_35["throttle_set"], 1)
+
+        no_control = dict(live_sample_35)
+        no_control["control_active"] = 0
+        self.assertEqual(
+            vehicle_trace.classify_14de_throttle_sample(no_control),
+            "no_control",
+        )
+
+        skip_shaped = dict(live_sample_35)
+        skip_shaped["engine_ready"] = 0
+        skip_shaped["throttle_set"] = 0
+        skip_shaped["engine_rpm"] = 400.0
+        skip_shaped["rpm_idle"] = 700.0
+        skip_shaped["throttle_applied"] = 0.0
+        self.assertEqual(
+            vehicle_trace.classify_14de_throttle_sample(skip_shaped),
+            "h4_skip",
+        )
+
+        stop_flush = dict(live_sample_35)
+        stop_flush["forced"] = 1
+        self.assertEqual(
+            vehicle_trace.classify_14de_throttle_sample(stop_flush),
+            "forced",
+        )
+        self.assertNotEqual(
+            vehicle_trace.classify_14de_throttle_sample(stop_flush),
+            "applied",
+        )
+
+        forced_zero = dict(live_sample_35)
+        forced_zero["forced"] = 0
+        self.assertEqual(
+            vehicle_trace.classify_14de_throttle_sample(forced_zero),
+            "applied",
+        )
+
     def test_named_negative_mutations_are_not_false_green(self) -> None:
         fixture = _load_json(FIXTURE_DIR / "negative_mutations.json")
         for mutation in fixture["mutations"]:

@@ -164,6 +164,10 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_true(value: object) -> bool:
+    return value is True or (_is_int(value) and value == 1)
+
+
 def _is_number(value: object) -> bool:
     return (
         isinstance(value, (int, float))
@@ -379,13 +383,14 @@ def classify_14de_throttle_sample(sample: dict[str, object]) -> str:
     """Name H4 skip vs setter-lag from OnInput 14de fields. Not a validate_trace substitute.
 
     Stop-flush (`forced`) and samples without MCP control are not an OnInput skip.
+    Wire JSON ints 1/0 classify like True/False. Does not mutate the sample.
     """
-    if sample["forced"] is True:
+    if _is_true(sample["forced"]):
         return "forced"
-    if sample["control_active"] is not True:
+    if not _is_true(sample["control_active"]):
         return "no_control"
-    ready = sample["engine_ready"] is True
-    throttle_set = sample["throttle_set"] is True
+    ready = _is_true(sample["engine_ready"])
+    throttle_set = _is_true(sample["throttle_set"])
     rpm = float(sample["engine_rpm"])
     idle = float(sample["rpm_idle"])
     requested = float(sample["throttle_requested"])
