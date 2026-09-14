@@ -205,6 +205,8 @@ Aceptación detallada: `plans/2026-07-14-agent-session-coordination-design.md` �
 
 ## Changelog de alcance
 
+- **2026-09-14 (H14(b) — stop propio `RUNNING_IDLE` ownerless):** Live D4: H3 sobrevivió `client_policy_untrusted_open_new_session`; `dayz_test_stop` del run idle del caller fail-closed porque `_h14_owned_stop` exigía `_caller_owns_run` y `RunRecord` borra `owner_session_id` en `RUNNING_IDLE`. La exención del kill-path H14(b) cubre esa fila ownerless stoppable (H11 adopt-then-kill). Un `owner_session` ajeno y F0 siguen fail-closed. No reescribe el párrafo grill de H14/H10. No reabre PARO `3fc1`/`1025`. `050e` sigue aparcada a verificación viva.
+
 - **2026-09-13 (W5 occupancy — H11/H13):** Grill W5 `[EXACT-W5-3]` / `[EXACT-W5-4]`. Enmienda **H11**: un caller no lanza encima ni detiene un run que no posee; `dayz_test_stop` queda reservado al dueño del run (o al que adoptó la caja por lease); el desalojo de un run ajeno vivo se pide sólo por `dayz_test_run(..., takeover=true)`, que lo detiene y lo declara `evicted_run_id`. Enmienda **H13**: ocupación de un run gestionado `RUNNING`/`RUNNING_IDLE` que el caller no posee → error MCP `takeover_required` con `occupied_by_run_id`, no `active_run_exists`; `active_run_exists` se conserva para el resto de ocupaciones y el wire sellado de lifecycle `start_run`. No reescribe H10/H14. No reabre PARO `3fc1`/`1025`.
 
 - **2026-09-12 (G3 — `546d` dump):** `vehicle_trace` añade `mode=dump`: JSONL canónico `$profile:dayz_mcp_trace_<trace_id>.jsonl`, autodump en `stop`, wire sin las N muestras. Group G sigue ❓. Plan: `docs/plan-546d.md`.
