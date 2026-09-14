@@ -7,6 +7,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -855,9 +856,42 @@ def _frame_stale_report(
 # printwindow first, never ForceForeground: AttachThreadInput+SetForegroundWindow
 # has killed the live DayZ client (fb-20260904-025027-8f76).
 DEFAULT_GRAB_METHOD = "printwindow"
+_DESKTOP_SWITCHDESKTOP = 0x0100
+
+
+def probe_input_desktop() -> str:
+    """Whether the interactive input desktop is reachable.
+
+    Windows: OpenInputDesktop(DESKTOP_SWITCHDESKTOP). A NULL handle means the
+    session is locked or on the secure desktop; a live handle is closed.
+    Non-Windows hosts and any exception are unknown.
+    """
+    if sys.platform != "win32":
+        return "unknown"
+    try:
+        import ctypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.OpenInputDesktop.argtypes = [
+            ctypes.c_uint,
+            ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        user32.OpenInputDesktop.restype = ctypes.c_void_p
+        user32.CloseDesktop.argtypes = [ctypes.c_void_p]
+        user32.CloseDesktop.restype = ctypes.c_int
+        handle = user32.OpenInputDesktop(0, False, _DESKTOP_SWITCHDESKTOP)
+        if not handle:
+            return "locked"
+        user32.CloseDesktop(handle)
+        return "unlocked"
+    except Exception:
+        return "unknown"
 
 
 def _run_window_capture(output_path: str, process_name: str, timeout_s: float, method: str = DEFAULT_GRAB_METHOD, client_pid: int = 0, cmdline_match: str = "") -> dict[str, Any]:
+    if probe_input_desktop() == "locked":
+        return {"ok": False, "error": "session_locked"}
     if not os.path.exists(GRAB_SCRIPT):
         return {"ok": False, "error": f"capture_backend_failed: grab script missing {GRAB_SCRIPT}"}
     cmd = [
