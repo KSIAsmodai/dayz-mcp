@@ -1180,8 +1180,18 @@ def _diagnose(sources: DoctorSources, *, require_clean: bool) -> dict[str, objec
         if not isinstance(status, dict):
             findings.append(_finding("DAEMON_STATUS_UNREADABLE", port=port, pid=pid))
             continue
+        status_findings = len(findings)
         _check_coordination(status, findings, port)
         _check_credential_recovery(status, findings, port)
+        if len(findings) == status_findings:
+            findings.append(
+                _finding(
+                    "DAEMON_STATUS_OK",
+                    severity="INFO",
+                    port=port,
+                    pid=pid,
+                )
+            )
 
     retail = _safe_snapshot(
         sources.process_snapshot, _RETAIL_NAMES, "retail", findings

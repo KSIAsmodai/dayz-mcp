@@ -186,6 +186,7 @@ These mailbox tools work with no game and no daemon.
 - `PROCESS_UNREGISTERED`, `RUN_STALE`, or `RUN_IDENTITY_MISMATCH`: preserve the process and manifest for explicit lifecycle/admin review; doctor performs no cleanup.
 - `PROCESS_SCAN_FAILED`: the process snapshot is unknown, so the result is fail-closed rather than clean.
 - `PROCESS_SCAN_DECODE_FAILED`: process-scan output could not be decoded; fail-closed and distinct from a missing process.
+- `DAEMON_STATUS_OK` (INFO): the listener on the registered port was identified, its `/status` read, and the coordination and credential checks raised nothing; a report with no `DAEMON_*` code at all means the daemon checks did not run.
 - `RUN_PREPRUNE_BACKUP_SLOTS_EXHAUSTED`: all ten `runs.json.bak-preprune*` slots are taken, so the load-time prune refuses to run and the manifest keeps growing. Retire the stale backups to restore pruning; the doctor still performs no cleanup.
 
 `telemetry_read` is exposed as-is. Known residual backlog: fixture line caps, radius/Inf hardening, and JSON-lines schema validation.
