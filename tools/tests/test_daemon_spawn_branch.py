@@ -52,6 +52,17 @@ def _audit_rows(localappdata: str) -> list[dict]:
     ]
 
 
+def _join_audit_workers(timeout_s: float) -> list[threading.Thread]:
+    workers = [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == "daemon-audit-event" and thread.is_alive()
+    ]
+    for worker in workers:
+        worker.join(timeout=timeout_s)
+    return [thread for thread in workers if thread.is_alive()]
+
+
 class _FakePopen:
     def __init__(self, pid: int) -> None:
         self.pid = pid
@@ -448,6 +459,18 @@ class DaemonEventRecordTest(unittest.TestCase):
                     waited = time.monotonic() - started
                 finally:
                     writer._lock.release()
+                still_alive = _join_audit_workers(5.0)
+                self.assertEqual(
+                    still_alive,
+                    [],
+                    "the budgeted worker must finish before TemporaryDirectory cleanup",
+                )
+                stopping = [
+                    row
+                    for row in _audit_rows(temporary)
+                    if row.get("event") == "daemon_stopping"
+                ]
+                self.assertEqual(len(stopping), 1)
 
         self.assertFalse(landed, "a row that did not land inside its budget is False")
         self.assertLess(waited, 1.0, "the caller waited on a lock it cannot bound")
@@ -519,6 +542,7 @@ class DaemonStartupWiringTest(unittest.TestCase):
                 idle_timeout_s=1.0,
                 marker=f"{daemon.SPAWN_BRANCH_JOB_BOUND}:{os.getppid()}",
             )
+            _join_audit_workers(5.0)
             rows = _audit_rows(temporary)
 
         self.assertEqual(code, 0)
@@ -541,6 +565,7 @@ class DaemonStartupWiringTest(unittest.TestCase):
                 idle_timeout_s=1.0,
                 marker=f"{daemon.SPAWN_BRANCH_BREAKAWAY_OK}:{os.getpid()}",
             )
+            _join_audit_workers(5.0)
             rows = _audit_rows(temporary)
 
         started = [row for row in rows if row.get("event") == "daemon_started"]
@@ -553,6 +578,7 @@ class DaemonStartupWiringTest(unittest.TestCase):
     def test_a_daemon_nobody_marked_says_so(self) -> None:
         with TemporaryDirectory() as temporary:
             self._drive(temporary, idle_timeout_s=1.0)
+            _join_audit_workers(5.0)
             rows = _audit_rows(temporary)
 
         started = [row for row in rows if row.get("event") == "daemon_started"]
@@ -564,6 +590,7 @@ class DaemonStartupWiringTest(unittest.TestCase):
     def test_run_daemon_records_the_idle_shutdown_with_its_reason(self) -> None:
         with TemporaryDirectory() as temporary:
             code, httpd, _generations = self._drive(temporary, idle_timeout_s=1.0)
+            _join_audit_workers(5.0)
             rows = _audit_rows(temporary)
 
         self.assertEqual(code, 0)
@@ -579,6 +606,7 @@ class DaemonStartupWiringTest(unittest.TestCase):
             code, _httpd, _generations = self._drive(
                 temporary, idle_timeout_s=0.0, stop=_InterruptingStop()
             )
+            _join_audit_workers(5.0)
             rows = _audit_rows(temporary)
 
         self.assertEqual(code, 130)
@@ -648,6 +676,7 @@ class DaemonStartupWiringTest(unittest.TestCase):
             code, _httpd, _generations = self._drive(
                 temporary, idle_timeout_s=0.0, stop=stop
             )
+            _join_audit_workers(5.0)
             rows = _audit_rows(temporary)
 
         self.assertEqual(code, 0)
@@ -688,6 +717,7 @@ class DaemonStartupWiringTest(unittest.TestCase):
                 daemon, "_job_object_raw", side_effect=RuntimeError("kernel32 is gone")
             ):
                 code, httpd, _generations = self._drive(temporary, idle_timeout_s=1.0)
+            _join_audit_workers(5.0)
             rows = _audit_rows(temporary)
 
         self.assertEqual(code, 0)
@@ -709,6 +739,7 @@ class DaemonStartupWiringTest(unittest.TestCase):
                 daemon.orphan_guard, "full_image_path_of", side_effect=image
             ):
                 code, _httpd, _generations = self._drive(temporary, idle_timeout_s=1.0)
+            _join_audit_workers(5.0)
             rows = _audit_rows(temporary)
 
         self.assertEqual(code, 0)
