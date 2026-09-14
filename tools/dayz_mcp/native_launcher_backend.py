@@ -7,7 +7,7 @@ import threading
 import time
 from collections import deque
 from ctypes import wintypes
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -1091,19 +1091,53 @@ def _read_job_completion(
     return int(code.value), int(key.value), int(overlapped.value or 0)
 
 
+@dataclass(slots=True)
+class _JobIocpLatch:
+    zero_seen: bool = False
+    new_process_pids: set[int] = field(default_factory=set)
+
+
+def _note_job_completion(
+    latch: _JobIocpLatch,
+    *,
+    message: int,
+    completion_key: int,
+    pid: int,
+    expected_job_handle: int,
+) -> None:
+    if completion_key != expected_job_handle:
+        return
+    if message == JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO:
+        latch.zero_seen = True
+        return
+    if message == JOB_OBJECT_MSG_NEW_PROCESS and pid > 0:
+        latch.zero_seen = False
+        latch.new_process_pids.add(pid)
+
+
 def _wait_job_new_process(
     completion_port: int,
     *,
     expected_job_handle: int,
     expected_pid: int,
     deadline: float,
+    latch: _JobIocpLatch | None = None,
 ) -> bool:
+    if latch is None:
+        latch = _JobIocpLatch()
     while time.monotonic() < deadline:
         remaining_ms = max(0, min(_DEBUG_POLL_MS, int((deadline - time.monotonic()) * 1000)))
         completion = _read_job_completion(completion_port, timeout_ms=remaining_ms)
         if completion is None:
             continue
         message, completion_key, pid = completion
+        _note_job_completion(
+            latch,
+            message=message,
+            completion_key=completion_key,
+            pid=pid,
+            expected_job_handle=expected_job_handle,
+        )
         if message == JOB_OBJECT_MSG_NEW_PROCESS:
             return completion_key == expected_job_handle and pid == expected_pid
         if message == JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO:
@@ -1116,7 +1150,10 @@ def _wait_active_zero(
     *,
     expected_job_handle: int,
     deadline: float,
+    latch: _JobIocpLatch | None = None,
 ) -> bool:
+    if latch is None:
+        latch = _JobIocpLatch()
     while time.monotonic() < deadline:
         completion = _read_job_completion(
             completion_port,
@@ -1124,7 +1161,14 @@ def _wait_active_zero(
         )
         if completion is None:
             continue
-        message, completion_key, _pid = completion
+        message, completion_key, pid = completion
+        _note_job_completion(
+            latch,
+            message=message,
+            completion_key=completion_key,
+            pid=pid,
+            expected_job_handle=expected_job_handle,
+        )
         if (
             message == JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO
             and completion_key == expected_job_handle
@@ -1213,6 +1257,8 @@ def _supervise_created_launcher(
     addon_helper_launches = 0
     cleanup_complete = False
     second_wait_ran = False
+    iocp_latch = _JobIocpLatch()
+    debug_seen_pids: set[int] = set()
 
     def receive_announcement(_channel: str, chunk: bytes) -> None:
         received_at = time.monotonic()
@@ -1327,8 +1373,10 @@ def _supervise_created_launcher(
             event_received_at = time.monotonic()
             if not (event.kind == "EXIT_PROCESS" and event.pid == root_pid):
                 check_start_watchdog(event_received_at)
-            if event.kind == "CREATE_PROCESS" and event.pid != root_pid:
-                descendant_started = True
+            if event.kind == "CREATE_PROCESS":
+                debug_seen_pids.add(event.pid)
+                if event.pid != root_pid:
+                    descendant_started = True
             drain_announcements()
             accepted_direct_kind: BrokerKind | None = None
             accepted_addon_helper = False
@@ -1342,6 +1390,7 @@ def _supervise_created_launcher(
                     expected_job_handle=job_completion_key,
                     expected_pid=event.pid,
                     deadline=event_received_at + _CHILD_CORRELATION_SECONDS,
+                    latch=iocp_latch,
                 )
                 try:
                     image_approved = created._root_image_authority.approve_root_debug_image(
@@ -1369,6 +1418,7 @@ def _supervise_created_launcher(
                     expected_job_handle=job_completion_key,
                     expected_pid=event.pid,
                     deadline=deadline,
+                    latch=iocp_latch,
                 )
                 announcement, announcement_clear = take_announcement(
                     event_received_at=event_received_at,
@@ -1483,6 +1533,7 @@ def _supervise_created_launcher(
                 created.completion_port_handle,
                 expected_job_handle=job_completion_key,
                 deadline=time.monotonic() + _DEBUG_DRAIN_SECONDS,
+                latch=iocp_latch,
             )
         created.close_job()
         _drain_after_job_close(
@@ -1496,14 +1547,23 @@ def _supervise_created_launcher(
                 created.completion_port_handle,
                 expected_job_handle=job_completion_key,
                 deadline=time.monotonic() + _DEBUG_DRAIN_SECONDS,
+                latch=iocp_latch,
             )
-        cleanup_complete = state.active_zero and active_zero_completed
+        cleanup_complete = state.active_zero and (
+            active_zero_completed or iocp_latch.zero_seen
+        )
         # second_wait + empty debug map: missing JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO
-        # is still cleanup complete. Do not fail the launch.
+        # is still cleanup complete when every job NEW_PROCESS pid was debug-seen.
+        # Do not require a ZERO that never posted. Do not treat an unretired
+        # job member consumed by _wait_active_zero as job-empty.
         if (
             not cleanup_complete
             and second_wait_ran
             and state.open_handle_count == 0
+            and (
+                iocp_latch.zero_seen
+                or iocp_latch.new_process_pids <= debug_seen_pids
+            )
         ):
             cleanup_complete = True
         elif not cleanup_complete:
@@ -1553,6 +1613,7 @@ def _supervise_created_launcher(
                     created.completion_port_handle,
                     expected_job_handle=job_completion_key,
                     deadline=deadline,
+                    latch=iocp_latch,
                 )
         raise
     finally:

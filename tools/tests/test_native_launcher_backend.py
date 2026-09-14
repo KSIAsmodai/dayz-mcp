@@ -1796,6 +1796,72 @@ class NativeDebugOwnershipTests(unittest.TestCase):
         )
         self.assertEqual(len(wait_calls), 2)
 
+    def test_unretired_job_new_process_does_not_proceed_without_zero(self) -> None:
+        backend = self._backend()
+
+        class EmptySafeKernel(_FakeKernel32):
+            def GetQueuedCompletionStatus(self, *_args: object) -> object:
+                if not self.completion_events:
+                    ctypes.set_last_error(backend._ERROR_SEM_TIMEOUT)
+                    return False
+                return super().GetQueuedCompletionStatus(*_args)
+
+        fake = EmptySafeKernel()
+        fake.pipe_bytes[23] = bytearray(_announcement_frame())
+        fake.completion_events = [
+            (True, 6, 501, 703),
+            (True, 6, 501, 900),
+            (True, 6, 501, 999),
+        ]
+        fake.debug_events = [
+            backend.NativeDebugEvent(
+                "CREATE_PROCESS",
+                pid=703,
+                tid=704,
+                process_handle=801,
+                thread_handle=802,
+                file_handle=803,
+            ),
+            backend.NativeDebugEvent(
+                "CREATE_PROCESS",
+                pid=900,
+                tid=901,
+                process_handle=811,
+                thread_handle=812,
+                file_handle=813,
+            ),
+            backend.NativeDebugEvent("EXIT_PROCESS", pid=900, tid=901, exit_code=0),
+            backend.NativeDebugEvent("EXIT_PROCESS", pid=703, tid=704, exit_code=0),
+        ]
+        original_kernel32 = backend._kernel32
+        original_debug_drain = backend._DEBUG_DRAIN_SECONDS
+        backend._kernel32 = fake
+        backend._DEBUG_DRAIN_SECONDS = 0.2
+        try:
+            created = self._create(backend, fake)
+            with self.assertRaises(backend.NativeLauncherBackendError) as raised:
+                backend._supervise_created_launcher(
+                    created,
+                    canonical_request=b"{}",
+                    runtime_pipes=backend.NativeRuntimePipes(
+                        11, 21, 22, 12, 23, 13, 14, 24, 15, 25
+                    ),
+                    image_authority=_ImageAuthority(),
+                    cancel_signal=threading.Event(),
+                )
+        finally:
+            backend._DEBUG_DRAIN_SECONDS = original_debug_drain
+            backend._kernel32 = original_kernel32
+        error = raised.exception
+        self.assertEqual(error.code, "native_job_cleanup_incomplete")
+        self.assertEqual(error.fine_code, "active_zero_wait_timed_out")
+        self.assertEqual(
+            error.detail,
+            "drain_s=0.2 second_wait=True open_handles=0 continues=4",
+        )
+        self.assertIn("new_process:999", fake.events)
+        self.assertEqual(backend._DEBUG_DRAIN_SECONDS, 5.0)
+
     def test_started_cancellation_cancels_blocked_request_write_without_stalling_debug(self) -> None:
         backend = self._backend()
         fake = _FakeKernel32()
@@ -2294,6 +2360,37 @@ class NativeDebugOwnershipTests(unittest.TestCase):
         finally:
             backend._kernel32 = original
         self.assertEqual(fake.calls, 2)
+
+    def test_wait_job_new_process_latches_consumed_zero(self) -> None:
+        backend = self._backend()
+
+        class CompletionKernel:
+            def __init__(self) -> None:
+                self.events = [(True, 4, 501, 0)]
+
+            def GetQueuedCompletionStatus(
+                self, *_args: object
+            ) -> tuple[bool, int, int, int]:
+                return self.events.pop(0)
+
+        fake = CompletionKernel()
+        latch = backend._JobIocpLatch()
+        original = backend._kernel32
+        backend._kernel32 = fake
+        try:
+            self.assertFalse(
+                backend._wait_job_new_process(
+                    601,
+                    expected_job_handle=501,
+                    expected_pid=703,
+                    deadline=backend.time.monotonic() + 1.0,
+                    latch=latch,
+                )
+            )
+        finally:
+            backend._kernel32 = original
+        self.assertTrue(latch.zero_seen)
+        self.assertEqual(latch.new_process_pids, set())
 
 
 class NativeLauncherThreadJoinTests(unittest.IsolatedAsyncioTestCase):
