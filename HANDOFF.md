@@ -1,35 +1,38 @@
 # HANDOFF — DayZ-MCP
 
 <!-- LIVE-STATE:START -->
-# DayZ-MCP — Estado vivo · snapshot 2026-09-14
+# DayZ-MCP — Estado vivo · snapshot 2026-09-14 (tras la segunda promoción)
 
-**Última verificación real:** 2026-09-14.
-- **Promoción:** `main` `1bad174` pasó al árbol vivo `P:\DayZ_MCP_dev` y el daemon se reinició (generación `eca81d26…`, `daemon_modules.stale=[]`, caja vacía).
-- **Ola 1:** mergeada en `main` como PRs #44–#48; **aún no está en el árbol vivo**.
-- **PBO desplegado:** `F77AAC3E…`, idéntico a `main` @ `1bad174` en sus 13 entradas. #44 cambia Enforce (`MCP_CarScript.c`, `MCPClientBridge.c`) **sin empaquetar**.
+**Última verificación real:** 2026-09-14 18:49.
+- **Árbol vivo `P:\DayZ_MCP_dev`:** `main` con el código de `6e51232` (Ola 1, PRs #44–#49). Fast-forward desde `1bad174` a las 18:43.
+- **Daemon:** reiniciado a las 18:43 con el argv canónico. Generación `f91c9a0d…`, `daemon_modules.stale=[]`, caja vacía.
+- **Suite del `main` combinado antes de promover:** `Ran 3690 tests`, `OK (skipped=55)`, 0 rojos.
+- **PBO desplegado:** `F77AAC3E…`, idéntico a `1bad174` en sus 13 entradas; la promoción no lo toca. #44 cambia Enforce (`MCP_CarScript.c`, `MCPClientBridge.c`) y **está sin empaquetar**.
 
-bugs: tracker = buzón `pipeline_inbox` · **25** abiertas (censo 2026-09-14: 22 tras cerrar A2, más las nuevas `4554`, `160e` y `6553`) · toque 2026-09-14
-ciclos_en_este_objetivo: 1 (triaje del buzón + promoción + Ola 1)
+bugs: tracker = buzón `pipeline_inbox` · **22** abiertas (censo 2026-09-14 18:49: 25 − 4 resueltas tras la promoción + la nueva `0e4c`) · toque 2026-09-14
+ciclos_en_este_objetivo: 1 (triaje del buzón + promoción + Ola 1 + segunda promoción)
 
 ## Estado actual
 
-- **Tip `main` = `ad2fafb` (merge de #48).** El árbol vivo sigue en `1bad174`: lo mergeado en #44–#48 **no sirve** hasta una segunda promoción. Esa promoción requiere caja vacía, `git merge --ff-only` en `P:`, reinicio del daemon y avisar a las sesiones abiertas para que reabran su cliente.
-- **Buzón triado** el 2026-09-14 (`reviews/triage-20260914-agy/RESUMEN.md`, sin versionar). 34 cerradas en triaje y las 3 A2 (`2c43`, `b1ff`, `14de`) tras la promoción.
-- **Ola 1**, por lanes Grok 4.6/Cursor en worktrees, con gates-ledger y review Codex `gpt-5.6-sol`:
-  - **#44** `deb9` + `07a1`: settle de ShiftUp y get-in al coche más cercano. Enforce offline; queda G7 in-game.
+- **Ola 1 en vivo desde las 18:43.** Se hizo por lanes Grok 4.6/Cursor en worktrees, con gates-ledger y review Codex `gpt-5.6-sol`:
+  - **#44** `deb9` + `07a1`: settle de ShiftUp y get-in al coche más cercano. Enforce sin empaquetar; queda G7 in-game.
   - **#45** `6d18` + `c12b`: `session_locked` en captura y nota de 20 fps sin foco.
   - **#46** `050e` + `145c`: fecha del registro en el rechazo untrusted (lista blanca de sello UTC); aviso `caller_tool_registry_stale` en `dayz_test_run`.
   - **#47** `7ef2` + `dff2`: generación del daemon cableada al lifecycle; filtro de token para generaciones en el wire; `session_release` documentado.
   - **#48** `4554`: el doctor vuelve a parsear `--supervised`/`--exec-audit-path` y a comprobar el daemon.
-- **Doctor tras la promoción:** FAIL por dos causas previas a ella (D-70). Una la arregla #48; la otra es la ficha `160e`.
+- **Doctor tras la segunda promoción** (`--daemon-policy normal`): sin `CONFIG_UNREADABLE`. Queda un FAIL, `RUN_PREPRUNE_BACKUP_SLOTS_EXHAUSTED` (ficha `160e`), y un WARN, `KNOWLEDGE_PACK_MISSING`.
+- **Clientes MCP abiertos antes de las 18:43:** su registro de tools está stale (`tool_registry_schema_signal=stale_client`). Cada sesión reabre su cliente antes de mutar; se avisó a las tres sesiones abiertas.
+- **Buzón triado** el 2026-09-14 (`reviews/triage-20260914-agy/RESUMEN.md`, sin versionar).
 
 ## Tickets
 
 GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido del buzón en commits). El tracker real es el buzón (`pipeline_inbox` / `pipeline_feedback` / `pipeline_resolve`) en `%LOCALAPPDATA%\DayZ_MCP\inbox\feedback.jsonl`, con ids `fb-AAAAMMDD-HHMMSS-xxxx` citados por sufijo.
 
-- **Cerrar tras la segunda promoción:** `050e`, `145c`, `c12b`, `4554`.
+- **Resueltas tras la segunda promoción:** `050e`, `145c` (su resto sigue en `2223`), `c12b` y `4554`. Puntero local de evidencia, sin versionar: `reviews/ola1-2026-09-14/EVIDENCE.md`.
 - **Cerrar tras G7 in-game:** `deb9`, `07a1`.
-- **Nueva sin resolver:** `6553`, test inestable del writer de audit. El hilo con budget compite con `rmtree` y puede poner rojo un G3 sin regresión real; hay que hacerlo hermético.
+- **Nuevas sin resolver:**
+  - `6553`: test inestable del writer de audit. El hilo con budget compite con `rmtree` y puede poner rojo un G3 sin regresión real; hay que hacerlo hermético.
+  - `0e4c`: con el daemon sano, el doctor no publica nada sobre él, así que «sin hallazgos» no distingue «comprobado» de «no comprobado». Propone un INFO `DAEMON_STATUS_OK`.
 - **Abiertas con resto:**
   - `7ef2`: rastro de runs huérfanos en `session_status`.
   - `dff2`: runbook y causa real de la muerte.
@@ -37,13 +40,13 @@ GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido 
 
 ## Próxima acción
 
-1. **Dueño:** decidir la segunda promoción (Ola 1 a vivo) y ejecutarla con la caja vacía. Después, `pipeline_resolve` de las cuatro fichas de arriba, y `doctor` para verificar que ya no sale CONFIG_UNREADABLE.
-2. **Dueño, ficha `160e`:** archivar los 10 slots `runs.json.bak-preprune*` (precedente `_preprune-archive\20260816\`) y fijar retención para `lifecycle-recovery-faults\backups` (8766 copias, 1,1 GB).
-3. **Ola 2 in-game con el dueño:**
+1. **Dueño, ficha `160e`:** archivar los 10 slots `runs.json.bak-preprune*` (precedente `_preprune-archive\20260816\`) y fijar retención para `lifecycle-recovery-faults\backups` (8766 copias, 1,1 GB). Es el único FAIL que queda en el doctor.
+2. **Ola 2 in-game con el dueño:**
    - build del PBO con #44 y G7 de `deb9`/`07a1`, más sus 5 P2 de review;
    - WF §6: G3 GREEN, freecam→get-in / BUG-040, `b1ff` I1, time/weather, BUG-069/083/113/096;
    - B3 #6: `c261`, `3bb4`, `5dbe`, `1f21`;
    - `f298` y `f47b`.
+3. **Sin juego, delegables:** `6553` (test hermético) y `0e4c` (INFO positivo del doctor).
 4. **Decisiones de dueño pendientes:** modelo de cola `2223`, parada ordenada `8604`, `8bc6`, PARO/PARK (`3fc1`/`dce1`/`1025`, `2edd`-1, `dae1`-1/2).
 
 ## Invariantes CERRADAS — NO retocar / NO reabrir sin ángulo nuevo
@@ -58,13 +61,14 @@ GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido 
 
 ## Punteros (detalle)
 
-- Decisiones D-69 y D-70: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\decisions\decision-log.md`
-- Evidencia de la Ola 1 (ledgers, reverify, reviews, briefs): `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-ola1\`
-- Sesión: `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-triaje-promocion-ola1.md`
+- Decisiones D-69, D-70 y D-71: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\decisions\decision-log.md`
+- Evidencia de la Ola 1 y de la segunda promoción (ledgers, reverify, reviews, briefs, log de la suite): `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-ola1\`
+- Sesiones: `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-triaje-promocion-ola1.md` y `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-segunda-promocion.md`
+- Runbook de promoción a vivo: `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-handoff-segunda-promocion.md`
 - Histórico pre-v1.2: [`HANDOFF-ARCHIVE.md`](HANDOFF-ARCHIVE.md)
 - `NEXT-SESSION-PROMPT.txt` es de **22-ago** y está **obsoleto**. No usarlo.
 
-**Gate de arranque:** `Retomo DayZ-MCP desde: Ola 1 mergeada (#44–#48) pero NO promovida · árbol vivo 1bad174 · 25 fichas abiertas · próxima acción: decisión de segunda promoción del dueño, luego resolve 050e/145c/c12b/4554 y Ola 2 in-game`
+**Gate de arranque:** `Retomo DayZ-MCP desde: Ola 1 EN VIVO (#44–#49, generación f91c9a0d) · 22 fichas abiertas · próxima acción: 160e (dueño), Ola 2 in-game con el PBO de #44, y 6553/0e4c sin juego`
 <!-- LIVE-STATE:END -->
 
 ---
