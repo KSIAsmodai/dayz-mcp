@@ -4,6 +4,7 @@ import asyncio
 import json
 import ntpath
 import os
+import re
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
@@ -1666,6 +1667,14 @@ _DIAGNOSTIC_FIELDS = (
 )
 
 
+def _wire_safe_generation(value: object) -> bool:
+    """A generation reaches the MCP wire in stop envelopes: empty or the minted token only."""
+    return isinstance(value, str) and (
+        value == ""
+        or process_lifecycle._GENERATION_TOKEN.fullmatch(value) is not None
+    )
+
+
 def _validated_generation(source: object) -> dict[str, object] | None:
     if not isinstance(source, dict):
         return None
@@ -1674,9 +1683,9 @@ def _validated_generation(source: object) -> dict[str, object] | None:
     launch = source["daemon_generation_at_launch"]
     current = source["daemon_generation_current"]
     changed = source["generation_changed"]
-    if launch is not None and not isinstance(launch, str):
+    if launch is not None and not _wire_safe_generation(launch):
         return None
-    if not isinstance(current, str):
+    if not _wire_safe_generation(current):
         return None
     if changed is not None and not isinstance(changed, bool):
         return None
@@ -1711,15 +1720,27 @@ def _copy_generation(source: dict[str, object]) -> dict[str, object]:
     return copied
 
 
+_STOP_ENVELOPE_REASON = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_STOP_ENVELOPE_STATE = re.compile(r"^[A-Z][A-Z_]{0,31}$")
+
+
 def _failed_stop_envelope(
     run_id: str, error_code: str, source: dict[str, object]
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "status": "failed",
         "run_id": run_id,
         "error_code": error_code,
         **_copy_generation(source),
     }
+    # Persisted free text must not cross the MCP wire.
+    state = source.get("state")
+    if isinstance(state, str) and _STOP_ENVELOPE_STATE.fullmatch(state):
+        payload["state"] = state
+    reason = source.get("reason")
+    if isinstance(reason, str) and _STOP_ENVELOPE_REASON.fullmatch(reason):
+        payload["reason"] = reason
+    return payload
 
 
 def _h14_caller_session(runtime: _Runtime) -> str | None:
