@@ -379,13 +379,28 @@ def classify_14de_throttle_sample(sample: dict[str, object]) -> str:
     """Name H4 skip vs setter-lag from OnInput 14de fields. Not a validate_trace substitute.
 
     Stop-flush (`forced`) and samples without MCP control are not an OnInput skip.
+    Wire JSON 1/0 uses `_normalize_bridge_boolean`. Does not mutate the sample.
     """
-    if sample["forced"] is True:
+    try:
+        forced = _normalize_bridge_boolean(sample["forced"])
+    except ValueError:
+        forced = False
+    if forced:
         return "forced"
-    if sample["control_active"] is not True:
+    try:
+        control_active = _normalize_bridge_boolean(sample["control_active"])
+    except ValueError:
+        control_active = False
+    if not control_active:
         return "no_control"
-    ready = sample["engine_ready"] is True
-    throttle_set = sample["throttle_set"] is True
+    try:
+        ready = _normalize_bridge_boolean(sample["engine_ready"])
+    except ValueError:
+        ready = False
+    try:
+        throttle_set = _normalize_bridge_boolean(sample["throttle_set"])
+    except ValueError:
+        throttle_set = False
     rpm = float(sample["engine_rpm"])
     idle = float(sample["rpm_idle"])
     requested = float(sample["throttle_requested"])
