@@ -188,6 +188,7 @@ These mailbox tools work with no game and no daemon.
 - `PROCESS_SCAN_DECODE_FAILED`: process-scan output could not be decoded; fail-closed and distinct from a missing process.
 - `DAEMON_STATUS_OK` (INFO): the listener on the registered port was identified, its `/status` read, and the coordination and credential checks raised nothing; a report with no `DAEMON_*` code at all means the daemon checks did not run.
 - `RUN_PREPRUNE_BACKUP_SLOTS_EXHAUSTED`: all ten `runs.json.bak-preprune*` slots are taken, so the load-time prune refuses to run and the manifest keeps growing. Retire the stale backups to restore pruning; the doctor still performs no cleanup.
+- `MANIFEST_BACKUP_RETENTION_STALLED`: the store keeps the newest 200 manifest backups under `lifecycle-recovery-faults/backups`, plus every backup the checkpoint pointer or a fault names, removing at most 128 per checkpoint. The warning means the directory holds more than twice that number, or a blocker (named in the finding) keeps the prune from removing anything. Repair or move the named blocker aside; the doctor still performs no cleanup.
 
 `telemetry_read` is exposed as-is. Known residual backlog: fixture line caps, radius/Inf hardening, and JSON-lines schema validation.
 
