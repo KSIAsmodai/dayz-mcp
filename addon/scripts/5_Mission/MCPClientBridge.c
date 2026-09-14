@@ -2798,6 +2798,8 @@ class MCPClientBridge extends MCPJobRunnerOwner
 		m_ReadyProxyCargos.Clear();
 		GetGame().GetObjectsAtPosition3D(pos, DRIVE_CLIENT_SEARCH_RADIUS, m_ReadyObjects, m_ReadyProxyCargos);
 
+		Transport best;
+		float bestDist = 0.0;
 		int i = 0;
 		while (i < m_ReadyObjects.Count())
 		{
@@ -2805,13 +2807,23 @@ class MCPClientBridge extends MCPJobRunnerOwner
 			Transport vehicle = Transport.Cast(found);
 			if (vehicle)
 			{
-				return vehicle;
+				float distSq = vector.DistanceSq(pos, vehicle.GetPosition());
+				if (!best)
+				{
+					best = vehicle;
+					bestDist = distSq;
+				}
+				else if (distSq < bestDist)
+				{
+					best = vehicle;
+					bestDist = distSq;
+				}
 			}
 
 			i = i + 1;
 		}
 
-		return null;
+		return best;
 	}
 
 	protected CarScript ResolveOwnedCar()
