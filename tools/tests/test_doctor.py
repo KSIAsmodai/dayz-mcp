@@ -1576,6 +1576,99 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(free_exit, 0)
         self.assertNotIn("RUN_PREPRUNE_BACKUP_SLOTS_EXHAUSTED", self.codes(free))
 
+    def _hex_backup_dir(self, index: int) -> Path:
+        backups = self.runtime / "lifecycle-recovery-faults" / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        directory = backups / f"{index:064x}"
+        directory.mkdir()
+        return directory
+
+    def test_fb_160e_manifest_backup_retention_stalled_for_blocker(self) -> None:
+        (self.runtime / "lifecycle-recovery-faults" / "stray-child").mkdir(
+            parents=True
+        )
+        payload, exit_code = self.execute()
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        stalled = [
+            item
+            for item in payload["findings"]
+            if item["code"] == "MANIFEST_BACKUP_RETENTION_STALLED"
+        ]
+        self.assertEqual(len(stalled), 1)
+        self.assertEqual(stalled[0]["severity"], "WARN")
+        self.assertEqual(stalled[0]["blocker"], "unexpected_child")
+        self.assertEqual(stalled[0]["count"], 0)
+        self.assertEqual(payload["summary"]["fail"], 0)
+        self.assertGreaterEqual(payload["summary"]["warn"], 1)
+
+    def test_fb_160e_manifest_backup_retention_stalled_when_count_exceeds_twice_retain(
+        self,
+    ) -> None:
+        for index in range(5):
+            self._hex_backup_dir(index)
+        with patch(
+            "dayz_mcp.runtime_state.MANIFEST_BACKUP_RETAIN", 2, create=True
+        ):
+            payload, exit_code = self.execute()
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        stalled = [
+            item
+            for item in payload["findings"]
+            if item["code"] == "MANIFEST_BACKUP_RETENTION_STALLED"
+        ]
+        self.assertEqual(len(stalled), 1)
+        self.assertEqual(stalled[0]["severity"], "WARN")
+        self.assertEqual(stalled[0]["count"], 5)
+        self.assertEqual(stalled[0]["retain"], 2)
+        self.assertIsNone(stalled[0]["blocker"])
+
+    def test_fb_160e_manifest_backup_retention_stalled_absent_for_healthy_or_missing(
+        self,
+    ) -> None:
+        missing, missing_exit = self.execute()
+        self.assertEqual(missing_exit, 0)
+        self.assertNotIn("MANIFEST_BACKUP_RETENTION_STALLED", self.codes(missing))
+
+        self._hex_backup_dir(1)
+        healthy, healthy_exit = self.execute()
+        self.assertEqual(healthy_exit, 0)
+        self.assertTrue(healthy["ok"])
+        self.assertNotIn("MANIFEST_BACKUP_RETENTION_STALLED", self.codes(healthy))
+
+    def test_fb_160e_manifest_backup_retention_stalled_keeps_ok_and_exit_in_normal_mode(
+        self,
+    ) -> None:
+        (self.runtime / "lifecycle-recovery-faults" / "stray-child").mkdir(
+            parents=True
+        )
+        payload, exit_code = self.execute()
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["summary"]["fail"], 0)
+        self.assertIn("MANIFEST_BACKUP_RETENTION_STALLED", self.codes(payload))
+        self.assertIn("DAEMON_STATUS_OK", self.codes(payload))
+
+    def test_fb_160e_retention_status_failure_is_reported_not_silent(self) -> None:
+        module = self.require_doctor()
+        with patch.object(
+            module.LifecycleRecoveryFaultStore,
+            "manifest_backup_retention_status",
+            side_effect=RuntimeError("boom"),
+        ):
+            payload, exit_code = self.execute()
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        stalled = [
+            item
+            for item in payload["findings"]
+            if item["code"] == "MANIFEST_BACKUP_RETENTION_STALLED"
+        ]
+        self.assertEqual(len(stalled), 1)
+        self.assertEqual(stalled[0]["severity"], "WARN")
+        self.assertEqual(stalled[0]["blocker"], "status_failed")
+
     def test_active_blind_kill_is_reported_and_backup_is_ignored(self) -> None:
         active = self.scan_root / "Active" / "dayz-test.ps1"
         backup = self.scan_root / "_BACKUPS" / "dayz-test.ps1"

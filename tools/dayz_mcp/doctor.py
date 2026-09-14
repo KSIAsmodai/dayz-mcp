@@ -30,7 +30,11 @@ from dayz_mcp.process_lifecycle import (
     ProcessRecord,
     RunManifestStore,
 )
-from dayz_mcp.runtime_state import CoordinationFaultStore, RuntimePaths
+from dayz_mcp.runtime_state import (
+    CoordinationFaultStore,
+    LifecycleRecoveryFaultStore,
+    RuntimePaths,
+)
 from dayz_mcp.session_coordination import SESSION_TTL_S
 
 
@@ -1025,6 +1029,39 @@ def _check_runs(
             )
 
 
+def _check_manifest_backup_retention(
+    sources: DoctorSources, findings: list[dict[str, object]]
+) -> None:
+    try:
+        status = LifecycleRecoveryFaultStore(
+            sources.runtime_paths
+        ).manifest_backup_retention_status()
+        blocker = status.get("blocker")
+        count = status["count"]
+        retain = status["retain"]
+    except Exception:
+        findings.append(
+            _finding(
+                "MANIFEST_BACKUP_RETENTION_STALLED",
+                severity="WARN",
+                count=None,
+                retain=None,
+                blocker="status_failed",
+            )
+        )
+        return
+    if blocker is not None or count > 2 * retain:
+        findings.append(
+            _finding(
+                "MANIFEST_BACKUP_RETENTION_STALLED",
+                severity="WARN",
+                count=count,
+                retain=retain,
+                blocker=blocker,
+            )
+        )
+
+
 def _check_launchers(
     roots: tuple[Path, ...], findings: list[dict[str, object]]
 ) -> None:
@@ -1208,6 +1245,7 @@ def _diagnose(sources: DoctorSources, *, require_clean: bool) -> dict[str, objec
             )
         )
     _check_runs(sources, managed, findings)
+    _check_manifest_backup_retention(sources, findings)
     _check_launchers(sources.scan_roots, findings)
     _check_native_bundle_closure(sources, findings)
     _check_knowledge_pack(sources, registrations, findings)

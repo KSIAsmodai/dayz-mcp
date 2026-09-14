@@ -25,6 +25,8 @@ SECRET_KEYS = frozenset(
 )
 AUDIT_MAX_BYTES = 5 * 1024 * 1024
 AUDIT_BACKUPS = 5
+MANIFEST_BACKUP_RETAIN = 200
+MANIFEST_BACKUP_PRUNE_BATCH = 128
 
 _REDACTED = "[REDACTED]"
 _NON_PERSISTED_KEYS = frozenset(
@@ -956,6 +958,7 @@ class LifecycleRecoveryFaultStore:
             / receipt_sha
         )
         with self._lock:
+            reused_manifest = False
             try:
                 self._write_create_only_bytes(directory / "manifest.bin", raw)
             except FileExistsError:
@@ -967,6 +970,7 @@ class LifecycleRecoveryFaultStore:
                     raise ValueError("invalid_lifecycle_manifest_backup") from exc
                 if existing != raw:
                     raise ValueError("invalid_lifecycle_manifest_backup")
+                reused_manifest = True
             try:
                 self._write_create_only_text(directory / "receipt.json", receipt_text)
             except FileExistsError:
@@ -978,17 +982,227 @@ class LifecycleRecoveryFaultStore:
                     raise ValueError("invalid_lifecycle_manifest_backup") from exc
                 if existing != receipt_text.encode("utf-8"):
                     raise ValueError("invalid_lifecycle_manifest_backup")
+            if reused_manifest:
+                # Best effort: a reused backup that keeps its old mtime is only
+                # pruned sooner, while a raise here would roll back the manifest.
+                try:
+                    os.utime(directory, None)
+                except OSError:
+                    pass
         return receipt_sha
 
     def checkpoint_manifest(self, raw: bytes) -> str:
-        receipt_sha = self.create_manifest_backup(raw)
-        payload = {
-            "format_version": 1,
-            "manifest_sha256": _sha256(raw),
-            "backup_receipt_sha256": receipt_sha,
-        }
-        atomic_write_json(self.paths.lifecycle_manifest_checkpoint_path, payload)
-        return receipt_sha
+        with self._lock:
+            receipt_sha = self.create_manifest_backup(raw)
+            payload = {
+                "format_version": 1,
+                "manifest_sha256": _sha256(raw),
+                "backup_receipt_sha256": receipt_sha,
+            }
+            atomic_write_json(self.paths.lifecycle_manifest_checkpoint_path, payload)
+            try:
+                self._prune_manifest_backups(receipt_sha)
+            except Exception:
+                pass
+            return receipt_sha
+
+    def manifest_backup_retention_status(self) -> dict[str, object]:
+        """Read-only backup retention view: count, retain limit, optional blocker."""
+
+        with self._lock:
+            blocker, _protected, candidates = self._manifest_backup_retention_state()
+            return {
+                "count": len(candidates),
+                "retain": MANIFEST_BACKUP_RETAIN,
+                "blocker": blocker,
+            }
+
+    def _manifest_backup_retention_state(
+        self,
+    ) -> tuple[str | None, set[str], list[tuple[int, str, Path]]]:
+        """Return (blocker, protected receipts, hex64 real backup directories).
+
+        Creates, modifies and deletes nothing. An absent tree is blocker None,
+        no protected receipts and no candidates.
+        """
+
+        protected: set[str] = set()
+        blocker: str | None = None
+        candidates: list[tuple[int, str, Path]] = []
+        pointer_path = self.paths.lifecycle_manifest_checkpoint_path
+        try:
+            pointer_path.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            blocker = "pointer_unreadable"
+        else:
+            try:
+                raw, _ = _read_pinned_regular_file(pointer_path)
+                payload = json.loads(raw.decode("utf-8"))
+            except (
+                FileNotFoundError,
+                OSError,
+                RuntimeError,
+                UnicodeError,
+                json.JSONDecodeError,
+            ):
+                blocker = "pointer_unreadable"
+            else:
+                if (
+                    not isinstance(payload, dict)
+                    or set(payload)
+                    != {
+                        "format_version",
+                        "manifest_sha256",
+                        "backup_receipt_sha256",
+                    }
+                    or payload.get("format_version") != 1
+                    or not self._valid_hex64(payload.get("manifest_sha256"))
+                    or not self._valid_hex64(payload.get("backup_receipt_sha256"))
+                ):
+                    blocker = "pointer_unreadable"
+                else:
+                    protected.add(str(payload["backup_receipt_sha256"]).casefold())
+
+        faults_dir = self.paths.lifecycle_recovery_faults_dir
+        try:
+            _safe_directory(faults_dir)
+            child_names = os.listdir(faults_dir)
+        except FileNotFoundError:
+            return blocker, protected, candidates
+        except (OSError, RuntimeError):
+            if blocker is None:
+                blocker = "unexpected_child"
+            return blocker, protected, candidates
+
+        backups_dir: Path | None = None
+        for name in child_names:
+            child = faults_dir / name
+            try:
+                child_stat = child.lstat()
+            except OSError:
+                if blocker is None:
+                    blocker = "unexpected_child"
+                continue
+            if name == "backups":
+                if not stat.S_ISDIR(child_stat.st_mode) or _is_reparse(child_stat):
+                    if blocker is None:
+                        blocker = "unexpected_child"
+                    continue
+                backups_dir = child
+                continue
+            if (
+                not self._valid_uuid4(name)
+                or not stat.S_ISDIR(child_stat.st_mode)
+                or _is_reparse(child_stat)
+            ):
+                if blocker is None:
+                    blocker = "unexpected_child"
+                continue
+            try:
+                fault = self._read_json(
+                    child / "fault.json",
+                    self.validate_fault,
+                    "invalid_lifecycle_recovery_fault",
+                )
+            except ValueError:
+                if blocker is None:
+                    blocker = "fault_unreadable"
+                continue
+            protected.add(str(fault["backup_receipt_sha256"]).casefold())
+
+        if backups_dir is None:
+            return blocker, protected, candidates
+
+        try:
+            _safe_directory(backups_dir)
+            with os.scandir(backups_dir) as entries:
+                for entry in entries:
+                    if not self._valid_hex64(entry.name):
+                        continue
+                    try:
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                        dir_stat = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        if blocker is None:
+                            blocker = "backup_unreadable"
+                        continue
+                    if not stat.S_ISDIR(dir_stat.st_mode) or _is_reparse(dir_stat):
+                        continue
+                    candidates.append(
+                        (dir_stat.st_mtime_ns, entry.name, Path(entry.path))
+                    )
+        except FileNotFoundError:
+            pass
+        except (OSError, RuntimeError):
+            if blocker is None:
+                blocker = "backup_unreadable"
+        return blocker, protected, candidates
+
+    def _prune_manifest_backups(self, keep_receipt_sha256: str) -> int:
+        """Remove oldest unreferenced manifest backups.
+
+        MANIFEST_BACKUP_PRUNE_BATCH bounds removal attempts per call. The
+        single enumeration of backups/ is not bounded by that batch.
+
+        Fail closed: an unreadable pointer, an invalid or missing fault, or an
+        unexpected sibling of backups/ removes nothing.
+        """
+        with self._lock:
+            blocker, protected, candidates = self._manifest_backup_retention_state()
+            if blocker is not None:
+                return 0
+            protected.add(str(keep_receipt_sha256).casefold())
+
+            candidates.sort(key=lambda item: (-item[0], item[1]))
+            keep = {
+                item[1].casefold()
+                for item in candidates[:MANIFEST_BACKUP_RETAIN]
+            }
+            keep.update(
+                item[1].casefold()
+                for item in candidates
+                if item[1].casefold() in protected
+            )
+            stale = [
+                item for item in candidates if item[1].casefold() not in keep
+            ]
+            stale.sort(key=lambda item: (item[0], item[1]))
+            allowed = {"manifest.bin", "receipt.json"}
+            removed = 0
+            attempts = 0
+            for _, _, directory in stale:
+                if attempts >= MANIFEST_BACKUP_PRUNE_BATCH:
+                    break
+                attempts += 1
+                try:
+                    identity = _no_follow_directory_identity(directory)
+                    members = os.listdir(directory)
+                    if any(member not in allowed for member in members):
+                        continue
+                    for member in members:
+                        member_stat = (directory / member).lstat()
+                        if not _safe_regular_stat(member_stat):
+                            raise OSError("unsafe_manifest_backup_member")
+                    # The directory is checked again before every removal. This
+                    # narrows, but cannot close, the window between a check and the
+                    # path-based unlink that follows it: a process of the same user
+                    # that swaps the directory for a junction inside that window can
+                    # still redirect one removal. Removal relative to a directory
+                    # handle is what would close it.
+                    for member in sorted(members):
+                        if _no_follow_directory_identity(directory) != identity:
+                            raise OSError("manifest_backup_directory_changed")
+                        os.unlink(directory / member)
+                    if _no_follow_directory_identity(directory) != identity:
+                        raise OSError("manifest_backup_directory_changed")
+                    os.rmdir(directory)
+                except OSError:
+                    continue
+                removed += 1
+            return removed
 
     def load_manifest_checkpoint(self) -> tuple[bytes, str] | None:
         try:
@@ -1835,6 +2049,18 @@ def _safe_directory(path: Path) -> None:
     value = path.lstat()
     if not stat.S_ISDIR(value.st_mode) or _is_reparse(value):
         raise RuntimeError("unsafe_runtime_path")
+
+
+def _no_follow_directory_identity(path: Path) -> tuple[int, int]:
+    """Identity of a real directory, without following a junction or symlink.
+
+    Raises OSError for a missing path, a reparse point or anything that is not
+    a directory, so a caller inside an OSError handler skips it.
+    """
+    value = path.lstat()
+    if not stat.S_ISDIR(value.st_mode) or _is_reparse(value):
+        raise OSError("unsafe_runtime_directory")
+    return int(value.st_dev), int(value.st_ino)
 
 
 def _target_identity(path: Path) -> tuple[int, int, int, int, int, int] | None:
