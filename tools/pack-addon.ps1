@@ -14,7 +14,8 @@ param(
   [string]$Source = "",
   [string]$Destination = "",
   [string]$ToolsPath = "",
-  [switch]$Clear
+  [switch]$Clear,
+  [switch]$PackOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,6 +73,25 @@ if (Test-Path -LiteralPath $includeList) {
   Write-Warning "No include.lst in $Source -- AddonBuilder will pack every file in the tree, backups included."
 }
 if ($Clear) { $args += "-clear" }
+
+# Same predicate as dayz_mcp.pack_only / dayz_test_worker: .p3d .paa .rvmat.
+# Binarize uses -addon=P: and any broken config.cpp under P:\ fails the pack
+# (fb-20260915-005408-bcd8). Scripts-only trees must pass -packonly.
+function Test-HasBinarizableAssets {
+  param([string]$Root)
+  $suffixes = @('.p3d', '.paa', '.rvmat')
+  try {
+    $hit = Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction Stop |
+      Where-Object { $suffixes -contains $_.Extension.ToLowerInvariant() } |
+      Select-Object -First 1
+    return $null -ne $hit
+  } catch {
+    return $false
+  }
+}
+if ($PackOnly -or -not (Test-HasBinarizableAssets -Root $Source)) {
+  $args += "-packonly"
+}
 
 # A running DayZ keeps the destination PBO mapped, so the copy at the end of the build
 # fails. Cheap to say so before spending a minute binarizing for nothing.
