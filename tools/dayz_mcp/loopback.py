@@ -321,6 +321,23 @@ def _box_payload(state: "ServerState") -> dict:
     return occupancy
 
 
+def _retired_run_diagnostics_payload(state: object, _client: ClientIdentity) -> object:
+    """Copy lifecycle retired-run diagnostics onto /session/status, or None."""
+    lifecycle = getattr(state, "lifecycle", None)
+    if lifecycle is None:
+        return None
+    reader = getattr(lifecycle, "retired_run_diagnostics", None)
+    if not callable(reader):
+        return None
+    try:
+        snap = reader()
+    except Exception:
+        return None
+    if not isinstance(snap, list):
+        return None
+    return snap
+
+
 def _safe_operation_timeout(value: object) -> tuple[float, bool]:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0, False
@@ -3386,6 +3403,9 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 )
             payload["box"] = _box_payload(self.state)
+            payload["retired_run_diagnostics"] = _retired_run_diagnostics_payload(
+                self.state, client
+            )
 
         if action in {"acquire", "wait"} and status == 200:
             payload = self._adopt_on_grant(client, payload)

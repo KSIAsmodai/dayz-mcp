@@ -4044,6 +4044,12 @@ class ProcessLifecycle:
             finally:
                 self._finish_committed(authority, command_id)
 
+    def retired_run_diagnostics(self) -> list[dict[str, object]] | None:
+        # Same retired-run rows status() publishes; does not run the legacy
+        # identity gate and does not write the manifest.
+        _runs, diagnostics = self._status_snapshot()
+        return diagnostics
+
     def status(self, client: ClientIdentity) -> dict[str, object]:
         legacy_error = self._legacy_identity_error()
         if legacy_error is not None:
