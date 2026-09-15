@@ -5316,9 +5316,11 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         "(camera_released: true), camera_still_active when view='scripted' or "
         "viewport_moved, restore_unverified when the probe is illegible "
         "(ok=0). Do not treat a missing scripted camera as liberation. "
-        "Controls, HUD and simulation are NOT verified -- no reader for them "
-        "exists on the wire -- and the ok names them in not_verified. The "
-        "verb is idempotent, so a red can simply be retried. timeout_s bounds "
+        "Controls, HUD, simulation and render are NOT verified -- no reader for "
+        "controls, HUD or simulation exists on the wire, and the render is not "
+        "checked here -- and the ok names them in not_verified. Check the render "
+        "with capture_screenshot with frames of at least 2; its warnings then "
+        "carry render_frozen_signal. timeout_s bounds "
         "each of the two bridge calls."
     ))
     async def restore_gameplay(timeout_s: StrictFloat = DEFAULT_TOOL_TIMEOUT_S) -> dict[str, Any]:
@@ -5333,7 +5335,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                 raise ToolError(
                     "restore_unverified: restore_gameplay ran, but the camera_get "
                     f"probe that confirms it failed ({exc}); the view may still be "
-                    "on the debug camera. Retry restore_gameplay."
+                    "on the debug camera. Check camera_get or capture_screenshot."
                 ) from None
             verdict, detail = _restore_camera_verdict(probe)
             if verdict == "still_active":
@@ -5341,12 +5343,12 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                 raise ToolError(
                     "camera_still_active: restore_gameplay ran, but camera_get "
                     f"still reports a scripted camera mounted{suffix}; the view "
-                    "has not returned to the player. Retry restore_gameplay."
+                    "has not returned to the player. Check camera_get or capture_screenshot."
                 )
             if verdict != "released":
                 raise ToolError(
                     f"restore_unverified: restore_gameplay ran, but {detail}. "
-                    "Retry restore_gameplay."
+                    "Check camera_get or capture_screenshot."
                 )
             confirmed = dict(result)
             confirmed["camera_released"] = True
@@ -5403,7 +5405,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         "and a still scene all produce it legitimately. "
         "With a live simulation and a position that advances, frames>=2 (default frames=4) "
         "with distinct_frames=1 plus max_adjacent_delta=0 is a frozen-render signal, not a "
-        "process hang. With frames=1 those metrics are non-discriminating (always "
+        "process hang; warnings then carry render_frozen_signal. With frames=1 those metrics are non-discriminating (always "
         "distinct_frames=1 and max_adjacent_delta=0; no adjacent pairs) and are not a freeze "
         "signal. "
         "With two DayZ clients, capture targets the live run's client through cmdline_match/client_pid. "
