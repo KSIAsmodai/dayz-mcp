@@ -3723,6 +3723,29 @@ def _annotate_mcp_fence(overlay: dict[str, Any]) -> None:
     overlay["fence"] = annotated
 
 
+def _lease_renewal_contract(ttl_s: float) -> str:
+    """Lease TTL and how an interactive session keeps or loses it."""
+    return (
+        "Calls that reach the box with this session's lease (bridge verbs "
+        "and probes such as players_* and entity_state, dayz_test_run, "
+        "dayz_test_stop) and session_heartbeat renew the lease; "
+        "session_status does not renew the lease. With no renewing call "
+        f"for longer than {ttl_s:g} s the lease expires; an adopted run "
+        "then becomes ownerless RUNNING_IDLE and the next client verb on "
+        "that run returns run_not_owned. session_heartbeat keeps the lease "
+        "across a longer pause."
+    )
+
+
+def _attach_runs_retired_recently(status: dict[str, Any]) -> None:
+    if "retired_run_diagnostics" not in status:
+        status["runs_retired_recently"] = None
+        return
+    status["runs_retired_recently"] = dayz_test_tool._runs_retired_recently(
+        status.pop("retired_run_diagnostics")
+    )
+
+
 def _session_status_blocked_on(status: dict[str, Any]) -> str | None:
     """Return the next queue a caller should join, if a resource is busy."""
 
@@ -3890,8 +3913,8 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         description=(
             "Preferred: use this, not session_acquire. Wait in the FIFO until "
             "this request acquires the lease or its maximum wait expires; "
-            "never returns a queued result. Lease TTL is "
-            f"{config.session_ttl_s:g} s; renewal is internal."
+            "never returns a queued result. "
+            f"{_lease_renewal_contract(config.session_ttl_s)}"
         )
     )
     async def session_acquire_wait(
@@ -3916,11 +3939,15 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             if ctx is not None:
                 await ctx.report_progress(progress, total, message)
 
+        caller_stale = await _observe_caller_tool_registry_stale(
+            observe_server_sources
+        )
         client = _client_runtime()
         async with client.tool_lock:
-            return await client.session_acquire_wait(
+            payload = await client.session_acquire_wait(
                 purpose.strip(), validated_wait, report
             )
+        return _annotate_caller_tool_registry(payload, caller_stale)
 
     app.add_tool(
         session_acquire_wait,
@@ -3939,7 +3966,12 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             return await client.session_cancel(ticket)
 
     @app.tool(
-        description="LOW-LEVEL: prefer session_acquire_wait. Renew an active lease while exclusive work is in progress."
+        description=(
+            "LOW-LEVEL: prefer session_acquire_wait. "
+            "Renew an active lease while exclusive work is in progress or "
+            "across a pause with no other dayz-mcp calls. "
+            f"{_lease_renewal_contract(config.session_ttl_s)}"
+        )
     )
     async def session_heartbeat(lease_token: str) -> dict[str, Any]:
         if not isinstance(lease_token, str) or not lease_token:
@@ -3971,8 +4003,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "from adopt of an ownerless RUNNING_IDLE run; blocked_on then names "
             "session_acquire_wait, not the launch FIFO. blocked_on names the "
             "resource and next queue, or is null when neither lease nor box is busy. "
-            "Lease TTL "
-            f"is {config.session_ttl_s:g} s; renewal is internal."
+            f"{_lease_renewal_contract(config.session_ttl_s)}"
         )
     )
     async def session_status() -> dict[str, Any]:
@@ -3985,6 +4016,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                 box["available_for"] = box_available_for(box)
                 status["box"] = box
             status["blocked_on"] = _session_status_blocked_on(status)
+            _attach_runs_retired_recently(status)
             return status
 
     async def report_dayz_progress(
@@ -5945,7 +5977,11 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "RUNNING_IDLE run and reports it in adopted_run (with several idle "
             "runs it reports multiple_idle_runs and adopts none). "
             "scanned reports which log files were read and how many "
-            "lines each gave, so a no-match is visible as a no-match."
+            "lines each gave, so a no-match is visible as a no-match. "
+            "players_* and entity_state probes reach the box with this "
+            "session's lease and renew it while this wait stays open; "
+            "log_matches does not. "
+            f"{_lease_renewal_contract(config.session_ttl_s)}"
         )
     )
     async def wait_for(
