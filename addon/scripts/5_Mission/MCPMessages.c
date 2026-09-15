@@ -117,6 +117,8 @@ class MCPArgs
 	string uid;
 	// action_use: ActionBase typename (Type().ToString()), e.g. LFPG_ActionOpenBTCAtm.
 	string action;
+	// action_use_target: hands or self. action_use: empty or world.
+	string target;
 	// ui_dialog (wire v1.1). title is reused above. kind is this class only.
 	string kind;
 	string message;
@@ -493,6 +495,7 @@ class MCPResult
 	bool requested;
 	// action_use: started means local dispatch only; server ack is not awaited.
 	string action;
+	string target;
 	float distance;
 	bool started;
 	// ui_dialog nested payload. Unassigned on other commands.

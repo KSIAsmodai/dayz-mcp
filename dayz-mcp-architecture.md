@@ -138,7 +138,7 @@ Mapeadas a las APIs verificadas. 9 unguarded, 2 `DIAG`. (superficie inicial, 202
 
 - **session:** `session_connect` (Connect + OnClientNewEvent) · `session_status` (player listo?) · `session_disconnect`
 - **world:** `world_spawn` (CreateObjectEx) · `world_time_set` (SetDate/SetTimeMultiplier) · `world_weather_set` (WeatherPhenomenon)
-- **vehicle:** `vehicle_enter` (StartCommand_Vehicle) · `vehicle_drive` (Car.SetThrottle/SetSteering/SetBrake)
+- **vehicle:** `vehicle_enter` (StartCommand_Vehicle) · `vehicle_control` (client throttle/steer/brake)
 - **scene:** `scene_raycast` (DayZPhysics.RaycastRVProxy + GetCrosshairObject) — "ver" sin pixeles
 - **camera+capture:** `camera_set`/`camera_get` (SetCameraEx/GetCamera) · `capture_screenshot` (MakeScreenshot **o** window-grab fallback → PNG→base64 ImageContent — ver §6)
 - **exec (breakglass, `DIAG`):** `exec_enforce` (ExecuteEnforceScript) — **solo** para lo no mapeado, con whitelist
@@ -255,7 +255,7 @@ server-takeover. Por R6 (fail-closed), de salida:
 | Fase | Entrega | Esfuerzo | Desbloquea |
 |---|---|---|---|
 | **0. POC** ⭐ | round-trip **async no bloqueante** + readiness ACK, server-only: `query_player_state` → mod despacha por callback `RestApi` desde TickScheduler → devuelve posición con correlation-id | ~1 sem | de-risca lo crítico: transporte sin bloquear el tick + protocolo de readiness |
-| 1. Control | `world_spawn` + `vehicle_enter` (con `IsGettingIn`) + `vehicle_drive` | med | escenario + conducir sin input SO |
+| 1. Control | `world_spawn` + `vehicle_enter` (con `IsGettingIn`) | med | escenario + conducir sin input SO |
 | 2. Observación | `scene_raycast` + `telemetry_read` (verdict sin pixeles) | low | tests headless |
 | 3. Visual | cámara + `capture_screenshot` — **primero resolver MakeScreenshot vs window-grab** (ver §6); necesita cliente renderizado | med→alto | "ver" multi-ángulo |
 | 4. MCP completo | tool surface entera + security + packaging/install | med | el end-goal |

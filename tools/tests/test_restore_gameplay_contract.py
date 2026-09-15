@@ -216,7 +216,7 @@ class RestoreGameplayPostconditionContractTest(unittest.IsolatedAsyncioTestCase)
         self.assertIs(result["camera_released"], True)
         # A green that does not name what it never looked at reads as a full
         # restore, which is the class of lie the ficha reported.
-        self.assertEqual(result["not_verified"], ["controls", "hud", "simulation"])
+        self.assertEqual(result["not_verified"], ["controls", "hud", "simulation", "render"])
 
     async def test_ok_accepts_a_readable_vehicle_view_while_still_seated(self) -> None:
         app, runtime = self._app()
@@ -237,7 +237,7 @@ class RestoreGameplayPostconditionContractTest(unittest.IsolatedAsyncioTestCase)
         self.assertEqual(call.await_args_list[1].args[0], "camera_get")
         self.assertTrue(result["ok"])
         self.assertIs(result["camera_released"], True)
-        self.assertEqual(result["not_verified"], ["controls", "hud", "simulation"])
+        self.assertEqual(result["not_verified"], ["controls", "hud", "simulation", "render"])
 
     async def test_a_camera_still_mounted_is_not_answered_as_ok(self) -> None:
         app, runtime = self._app()

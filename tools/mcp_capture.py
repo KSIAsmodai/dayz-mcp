@@ -747,6 +747,45 @@ def _frame_evidence(frames: list[Image.Image], pair_deltas: list[float]) -> dict
     }
 
 
+RENDER_FROZEN_SIGNAL = "render_frozen_signal"
+
+
+def _is_metric_number(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
+
+
+def _is_render_frozen_signal(detail: object) -> bool:
+    if not isinstance(detail, dict):
+        return False
+    frames = detail.get("frames")
+    distinct = detail.get("distinct_frames")
+    delta = detail.get("max_adjacent_delta")
+    if not (
+        _is_metric_number(frames)
+        and _is_metric_number(distinct)
+        and _is_metric_number(delta)
+    ):
+        return False
+    return frames >= 2 and distinct == 1 and delta == 0
+
+
+def _annotate_render_frozen_signal(payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach render_frozen_signal once when intra-call metrics say the render did not move."""
+    if not _is_render_frozen_signal(payload.get("frame_stale_detail")):
+        return payload
+    warnings = payload.get("warnings")
+    if isinstance(warnings, list):
+        warnings = list(warnings)
+    else:
+        warnings = []
+    if RENDER_FROZEN_SIGNAL not in warnings:
+        warnings.append(RENDER_FROZEN_SIGNAL)
+    payload["warnings"] = warnings
+    return payload
+
+
 def _frame_stale_report(
     key: str,
     surface: str,
@@ -1227,4 +1266,5 @@ def capture_dual(
         path = write_fullres(effective_native, save_dir=save_dir, quality=fullres_quality)
         out["fullres_path"] = path
         meta["fullres_file_sha256"] = _file_sha256(path)
+    _annotate_render_frozen_signal(meta)
     return out

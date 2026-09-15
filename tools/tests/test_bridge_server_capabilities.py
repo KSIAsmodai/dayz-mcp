@@ -76,7 +76,6 @@ EXPECTED_SERVER_CAPABILITIES = (
     "scene_raycast",
     "surface_query",
     "telemetry_read",
-    "vehicle_drive",
     "vehicle_enter",
     "vehicle_prepare_fixture",
     "world_spawn",

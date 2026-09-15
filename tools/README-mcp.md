@@ -55,8 +55,8 @@ Mutating work uses the request-bound high-level queue by default:
 
 1. `session_status()` first: `owner`/`queue`/`claimable` describe the **lease**. `box` describes the **game box** (managed `runs`, unmanaged `foreign` DayZ processes, seen by image or by a held UDP port even without a run record, `ports_in_use` from the socket table, and the box wait FIFO). A free lease does not mean a free box.
 2. `session_acquire_wait(purpose, max_wait_s)` remains queued until it returns an active lease or fails. It never returns `queued`.
-3. Run only the required mutating operations. The lease/ticket TTL is 120 seconds; the exclusive-work heartbeat is 45 s (lease_supervisor), not the other way around.
-4. `session_release(lease_token)` as soon as exclusive work ends.
+3. Run only the required mutating operations. Calls that reach the box with this session's lease (bridge verbs and probes such as players_* and entity_state, `dayz_test_run`, `dayz_test_stop`) and `session_heartbeat` renew the lease; `session_status` does not renew the lease. The lease/ticket TTL is 120 seconds: with no renewing call for longer than 120 s the lease expires; an adopted run then becomes ownerless `RUNNING_IDLE` and the next client verb on that run returns `run_not_owned`. `session_heartbeat` keeps the lease across a longer pause. The 45 s supervisor (`lease_supervisor`) runs inside `dayz_test_run` and `dayz_test_stop` (both reach `execute_native_launcher_transaction`).
+4. `session_release(lease_token)` as soon as exclusive work ends. Releasing leaves an adopted run alive as ownerless `RUNNING_IDLE`; `dayz_test_stop` is what stops it.
 5. `session_status()` before handoff; confirm the caller has no lease/ticket and no pending commands. Report any degraded cleanup.
 
 `session_acquire` and `session_wait` remain low-level compatibility tools. A caller that uses them owns its loop and must call `session_cancel(ticket)` when abandoning a queued ticket. The high-level call installs an operation tombstone on timeout, cancellation or transport failure, including when its first HTTP request completes late. The long wait is tied to the live MCP request/host; it is not a durable job and does not resume after host restart.
@@ -85,7 +85,7 @@ A mutation without a lease returns `lease_required`. Call `session_acquire_wait`
 | Pin máximo de una operación | 300 s | `tools/dayz_mcp/session_coordination.py:42` `MAX_OPERATION_PIN_S` |
 | Timeout sondeo netstat TCP / UDP | 10 / 3 s | `tools/dayz_mcp/orphan_guard.py:380` y `:473`; no son TTL |
 
-Nota: el heartbeat de 45 s es cadencia de refresco, NO un TTL. 120 s es el TTL. La gracia de 90 s (`LEASE_GRACE_S`) es posterior al TTL y no persiste tras un restart del host. No se requiere heartbeat manual durante `dayz_test_run` (el launcher gestiona su propio lease internamente).
+Nota: el heartbeat de 45 s es cadencia de refresco, NO un TTL. 120 s es el TTL. La gracia de 90 s (`LEASE_GRACE_S`) es posterior al TTL y no persiste tras un restart del host. No se requiere heartbeat manual durante `dayz_test_run` ni `dayz_test_stop` (el launcher gestiona su propio lease internamente; el supervisor de 45 s corre en ambos). En una sesión interactiva, una pausa mayor de 120 s sin llamada que renueve requiere `session_heartbeat`; `session_status` no renueva. `session_release` deja un run adoptado vivo como `RUNNING_IDLE` sin dueño; para pararlo usar `dayz_test_stop`.
 
 ## Managed lifecycle and administration
 

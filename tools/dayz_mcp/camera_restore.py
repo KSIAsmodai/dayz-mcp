@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 RESTORE_CAMERA_PROBE_CMD = "camera_get"
-RESTORE_NOT_VERIFIED = ("controls", "hud", "simulation")
+RESTORE_NOT_VERIFIED = ("controls", "hud", "simulation", "render")
 RESTORE_CAMERA_VIEW_PLAYER = "player"
 RESTORE_CAMERA_VIEW_SCRIPTED = "scripted"
 RESTORE_CAMERA_VIEW_VEHICLE = "vehicle"
