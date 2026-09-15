@@ -2,7 +2,7 @@
 
 AddonBuilder's binarize pass uses ``-addon=P:`` and dies if any ``config.cpp``
 under ``P:\\`` fails to parse (fb-20260915-005408-bcd8). The worker, the
-native launcher, and ``tools/pack-addon.ps1`` therefore pass ``-packonly``
+native launcher, and the pack-addon script therefore pass ``-packonly``
 when the source tree has no binarizable assets.
 """
 

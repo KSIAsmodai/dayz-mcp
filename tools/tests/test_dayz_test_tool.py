@@ -897,6 +897,8 @@ class DayzTestExecutionTest(unittest.IsolatedAsyncioTestCase):
                 "vpp_missing",
                 "vpp_warnings",
                 "steam_startup",
+                "steam_pid_repair",
+                "steam_restarted",
                 "client_death_diagnosis",
             },
         )
@@ -1045,6 +1047,8 @@ class DayzTestExecutionTest(unittest.IsolatedAsyncioTestCase):
                 "vpp_missing",
                 "vpp_warnings",
                 "steam_startup",
+                "steam_pid_repair",
+                "steam_restarted",
                 "client_death_diagnosis",
             },
         )
@@ -1123,6 +1127,8 @@ class DayzTestExecutionTest(unittest.IsolatedAsyncioTestCase):
                 "vpp_missing",
                 "vpp_warnings",
                 "steam_startup",
+                "steam_pid_repair",
+                "steam_restarted",
                 "client_death_diagnosis",
             },
         )
@@ -1195,6 +1201,8 @@ class DayzTestExecutionTest(unittest.IsolatedAsyncioTestCase):
                 "vpp_missing",
                 "vpp_warnings",
                 "steam_startup",
+                "steam_pid_repair",
+                "steam_restarted",
                 "client_death_diagnosis",
             },
         )

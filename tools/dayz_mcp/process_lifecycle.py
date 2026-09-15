@@ -291,6 +291,16 @@ def _activity_from_snapshot(
 # Generation ids are minted as uuid4().hex and projections and stop envelopes publish
 # them on the MCP wire; a persisted value outside this token is reported as unknown.
 _GENERATION_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+_STEAM_PREP_TOKEN = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_STEAM_PREPARATION_BOUND = 32
+
+
+def _steam_prep_token(value: object) -> str | None:
+    return value if type(value) is str and _STEAM_PREP_TOKEN.fullmatch(value) else None
+
+
+def _steam_preparation_key(session_id: str) -> str:
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
 
 
 def _generation_projection(run: RunRecord, current: str) -> dict[str, object]:
@@ -1229,6 +1239,10 @@ class ProcessLifecycle:
         self._operation_lock = threading.RLock()
         self._command_id = -1
         self._last_start_error: str | None = None
+        # Wire-safe Steam preparation of the last successful client launch.
+        # One row per session; never persisted and never includes identity or PIDs.
+        self._steam_preparation_by_session: dict[str, dict[str, object]] = {}
+        self._steam_preparation_lock = threading.Lock()
         self._activity_lock = threading.Lock()
         self._last_activity: dict[tuple[str, str], float] = {}
         self._activity_unknown: set[tuple[str, str]] = set()
@@ -2261,6 +2275,49 @@ class ProcessLifecycle:
             return self._error("lease_required", 403)
         return self._start_run_reserved(client, authority, request)
 
+    def _is_idempotent_launch_retry(
+        self,
+        client: ClientIdentity,
+        authority: tuple[str, str, str],
+        request: object,
+    ) -> bool:
+        parsed, request_error = self._parse_start_request(request)
+        if request_error is not None or parsed is None:
+            return False
+        if self._canonical_error(Path(parsed["argv"][0])) is not None:
+            return False
+        if parsed.get("run_id") is not None:
+            return False
+        new_run_id = parsed.get("new_run_id")
+        if not isinstance(new_run_id, str):
+            return False
+        existing = self.manifest.get(new_run_id)
+        if existing is None:
+            return False
+        return (
+            existing.owner_session_id == client.session_id
+            and existing.owner_lease_id == authority[1]
+            and existing.launch_operation_id == parsed.get("launch_operation_id")
+            and existing.launch_request_sha256 == parsed.get("launch_request_sha256")
+            and existing.state == "RUNNING"
+        )
+
+    def _store_steam_preparation(
+        self, session_id: str, run_id: str, steam: Preparation
+    ) -> None:
+        key = _steam_preparation_key(session_id)
+        with self._steam_preparation_lock:
+            self._steam_preparation_by_session.pop(key, None)
+            self._steam_preparation_by_session[key] = {
+                "run_id": run_id,
+                "startup": _steam_prep_token(steam.startup),
+                "pid_repair": _steam_prep_token(steam.pid_repair),
+                "restarted": steam.restarted if type(steam.restarted) is bool else None,
+            }
+            while len(self._steam_preparation_by_session) > _STEAM_PREPARATION_BOUND:
+                oldest = next(iter(self._steam_preparation_by_session))
+                del self._steam_preparation_by_session[oldest]
+
     def _steam_mutation_allowed(self) -> bool | str:
         """Probe outside the lifecycle lock, then compare the captured run state."""
         if not self._operation_lock.acquire(timeout=0.1):
@@ -2306,6 +2363,23 @@ class ProcessLifecycle:
     ) -> dict[str, object]:
         command = "lifecycle_start"
         with self._operation_lock:
+            # Drop this session's Steam projection before any rejection or
+            # spawn failure can return. The idempotent retry of a launch
+            # already recorded for the same operation keeps the row.
+            keep_projection = False
+            try:
+                keep_projection = (
+                    self._reservation_active(authority, command)
+                    and not self._quarantined()
+                    and self._is_idempotent_launch_retry(client, authority, request)
+                )
+            except Exception:
+                keep_projection = False
+            if not keep_projection:
+                with self._steam_preparation_lock:
+                    self._steam_preparation_by_session.pop(
+                        _steam_preparation_key(client.session_id), None
+                    )
             if not self._reservation_active(authority, command):
                 return self._error("lease_invalid", 409)
             if self._quarantined():
@@ -2742,6 +2816,8 @@ class ProcessLifecycle:
                     "state": "RUNNING",
                 }
                 self._last_start_error = None
+                if steam is not None:
+                    self._store_steam_preparation(client.session_id, run_id, steam)
                 return self._terminal_outcome(
                     result,
                     "lifecycle_start_outcome",
@@ -3978,6 +4054,11 @@ class ProcessLifecycle:
         legacy_error = self._legacy_identity_error()
         if legacy_error is not None:
             return legacy_error
+        with self._steam_preparation_lock:
+            stored = self._steam_preparation_by_session.get(
+                _steam_preparation_key(client.session_id)
+            )
+            preparation = dict(stored) if stored is not None else None
         runs, diagnostics = self._status_snapshot()
         payload: dict[str, object] = {
             "runs": [self._projected_run(run) for run in runs],
@@ -3987,6 +4068,8 @@ class ProcessLifecycle:
         }
         if self._last_start_error is not None:
             payload["last_start_error"] = self._last_start_error
+        if preparation is not None:
+            payload["steam_preparation"] = preparation
         return payload
 
     def public_status(self) -> dict[str, object]:
