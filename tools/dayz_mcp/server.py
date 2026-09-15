@@ -601,7 +601,6 @@ _BRIDGE_COMMAND_TOOLS: dict[str, dict[str, str | None]] = {
         "scene_raycast": "scene_raycast",
         "surface_query": "surface_query",
         "telemetry_read": "telemetry_read",
-        "vehicle_drive": None,  # server-side verb with no public tool of its own
         "vehicle_enter": "vehicle_enter",
         "vehicle_prepare_fixture": "vehicle_prepare_fixture",
         "world_spawn": "world_spawn",
@@ -613,7 +612,6 @@ _BRIDGE_COMMAND_TOOLS: dict[str, dict[str, str | None]] = {
         "action_use_target": "action_use",
         "camera_get": "camera_get",
         "camera_set": "camera_set",
-        "drive_probe_client": None,  # internal probe, never exposed
         "engine_set": "engine_set",
         "key_press": "key_press",
         "player_respawn": "player_respawn",
@@ -3741,6 +3739,29 @@ def _annotate_mcp_fence(overlay: dict[str, Any]) -> None:
     overlay["fence"] = annotated
 
 
+def _lease_renewal_contract(ttl_s: float) -> str:
+    """Lease TTL and how an interactive session keeps or loses it."""
+    return (
+        "Calls that reach the box with this session's lease (bridge verbs "
+        "and probes such as players_* and entity_state, dayz_test_run, "
+        "dayz_test_stop) and session_heartbeat renew the lease; "
+        "session_status does not renew the lease. With no renewing call "
+        f"for longer than {ttl_s:g} s the lease expires; an adopted run "
+        "then becomes ownerless RUNNING_IDLE and the next client verb on "
+        "that run returns run_not_owned. session_heartbeat keeps the lease "
+        "across a longer pause."
+    )
+
+
+def _attach_runs_retired_recently(status: dict[str, Any]) -> None:
+    if "retired_run_diagnostics" not in status:
+        status["runs_retired_recently"] = None
+        return
+    status["runs_retired_recently"] = dayz_test_tool._runs_retired_recently(
+        status.pop("retired_run_diagnostics")
+    )
+
+
 def _session_status_blocked_on(status: dict[str, Any]) -> str | None:
     """Return the next queue a caller should join, if a resource is busy."""
 
@@ -3908,8 +3929,8 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         description=(
             "Preferred: use this, not session_acquire. Wait in the FIFO until "
             "this request acquires the lease or its maximum wait expires; "
-            "never returns a queued result. Lease TTL is "
-            f"{config.session_ttl_s:g} s; renewal is internal."
+            "never returns a queued result. "
+            f"{_lease_renewal_contract(config.session_ttl_s)}"
         )
     )
     async def session_acquire_wait(
@@ -3934,11 +3955,15 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             if ctx is not None:
                 await ctx.report_progress(progress, total, message)
 
+        caller_stale = await _observe_caller_tool_registry_stale(
+            observe_server_sources
+        )
         client = _client_runtime()
         async with client.tool_lock:
-            return await client.session_acquire_wait(
+            payload = await client.session_acquire_wait(
                 purpose.strip(), validated_wait, report
             )
+        return _annotate_caller_tool_registry(payload, caller_stale)
 
     app.add_tool(
         session_acquire_wait,
@@ -3957,7 +3982,12 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             return await client.session_cancel(ticket)
 
     @app.tool(
-        description="LOW-LEVEL: prefer session_acquire_wait. Renew an active lease while exclusive work is in progress."
+        description=(
+            "LOW-LEVEL: prefer session_acquire_wait. "
+            "Renew an active lease while exclusive work is in progress or "
+            "across a pause with no other dayz-mcp calls. "
+            f"{_lease_renewal_contract(config.session_ttl_s)}"
+        )
     )
     async def session_heartbeat(lease_token: str) -> dict[str, Any]:
         if not isinstance(lease_token, str) or not lease_token:
@@ -3989,8 +4019,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "from adopt of an ownerless RUNNING_IDLE run; blocked_on then names "
             "session_acquire_wait, not the launch FIFO. blocked_on names the "
             "resource and next queue, or is null when neither lease nor box is busy. "
-            "Lease TTL "
-            f"is {config.session_ttl_s:g} s; renewal is internal."
+            f"{_lease_renewal_contract(config.session_ttl_s)}"
         )
     )
     async def session_status() -> dict[str, Any]:
@@ -4003,6 +4032,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                 box["available_for"] = box_available_for(box)
                 status["box"] = box
             status["blocked_on"] = _session_status_blocked_on(status)
+            _attach_runs_retired_recently(status)
             return status
 
     async def report_dayz_progress(
@@ -5334,9 +5364,11 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         "(camera_released: true), camera_still_active when view='scripted' or "
         "viewport_moved, restore_unverified when the probe is illegible "
         "(ok=0). Do not treat a missing scripted camera as liberation. "
-        "Controls, HUD and simulation are NOT verified -- no reader for them "
-        "exists on the wire -- and the ok names them in not_verified. The "
-        "verb is idempotent, so a red can simply be retried. timeout_s bounds "
+        "Controls, HUD, simulation and render are NOT verified -- no reader for "
+        "controls, HUD or simulation exists on the wire, and the render is not "
+        "checked here -- and the ok names them in not_verified. Check the render "
+        "with capture_screenshot with frames of at least 2; its warnings then "
+        "carry render_frozen_signal. timeout_s bounds "
         "each of the two bridge calls."
     ))
     async def restore_gameplay(timeout_s: StrictFloat = DEFAULT_TOOL_TIMEOUT_S) -> dict[str, Any]:
@@ -5351,7 +5383,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                 raise ToolError(
                     "restore_unverified: restore_gameplay ran, but the camera_get "
                     f"probe that confirms it failed ({exc}); the view may still be "
-                    "on the debug camera. Retry restore_gameplay."
+                    "on the debug camera. Check camera_get or capture_screenshot."
                 ) from None
             verdict, detail = _restore_camera_verdict(probe)
             if verdict == "still_active":
@@ -5359,12 +5391,12 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                 raise ToolError(
                     "camera_still_active: restore_gameplay ran, but camera_get "
                     f"still reports a scripted camera mounted{suffix}; the view "
-                    "has not returned to the player. Retry restore_gameplay."
+                    "has not returned to the player. Check camera_get or capture_screenshot."
                 )
             if verdict != "released":
                 raise ToolError(
                     f"restore_unverified: restore_gameplay ran, but {detail}. "
-                    "Retry restore_gameplay."
+                    "Check camera_get or capture_screenshot."
                 )
             confirmed = dict(result)
             confirmed["camera_released"] = True
@@ -5421,7 +5453,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         "and a still scene all produce it legitimately. "
         "With a live simulation and a position that advances, frames>=2 (default frames=4) "
         "with distinct_frames=1 plus max_adjacent_delta=0 is a frozen-render signal, not a "
-        "process hang. With frames=1 those metrics are non-discriminating (always "
+        "process hang; warnings then carry render_frozen_signal. With frames=1 those metrics are non-discriminating (always "
         "distinct_frames=1 and max_adjacent_delta=0; no adjacent pairs) and are not a freeze "
         "signal. "
         "With two DayZ clients, capture targets the live run's client through cmdline_match/client_pid. "
@@ -6003,7 +6035,11 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "RUNNING_IDLE run and reports it in adopted_run (with several idle "
             "runs it reports multiple_idle_runs and adopts none). "
             "scanned reports which log files were read and how many "
-            "lines each gave, so a no-match is visible as a no-match."
+            "lines each gave, so a no-match is visible as a no-match. "
+            "players_* and entity_state probes reach the box with this "
+            "session's lease and renew it while this wait stays open; "
+            "log_matches does not. "
+            f"{_lease_renewal_contract(config.session_ttl_s)}"
         )
     )
     async def wait_for(

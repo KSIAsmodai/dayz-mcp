@@ -68,7 +68,7 @@ class MCPServerTest(unittest.TestCase):
                 exc.close()
 
     def test_new_commands_are_whitelisted_and_unknown_is_rejected(self) -> None:
-        for cmd in ("world_spawn", "vehicle_enter", "vehicle_drive", "camera_set", "camera_get"):
+        for cmd in ("world_spawn", "vehicle_enter", "camera_set", "camera_get"):
             status, body = self.request("POST", "/enqueue", {"cmd": cmd, "args": {}})
             self.assertEqual(status, 200)
             self.assertIn("id", body)
