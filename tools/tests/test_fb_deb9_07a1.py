@@ -118,6 +118,70 @@ class FbDeb907a1SourceContractTest(unittest.TestCase):
         self.assertIn("GetPosition", finder)
         self.assertGreater(finder.rindex("return"), finder.rindex("while"))
 
+    def test_fb_deb9_p2_nearest_distance_feeds_comparison_and_accumulator(self) -> None:
+        source = CLIENT_BRIDGE.read_text(encoding="utf-8")
+        finder = _method_body(
+            source, "protected Transport FindTransportNearClient(vector pos)"
+        )
+        loop = _body_re(
+            finder, r"while\s*\(\s*i\s*<\s*m_ReadyObjects\.Count\s*\(\s*\)\s*\)"
+        )
+        cast = re.search(r"\bTransport\s+(\w+)\s*=\s*Transport\.Cast\s*\(", loop)
+        self.assertIsNotNone(cast)
+        vehicle = cast.group(1)
+        vehicle_body = _body_re(loop, rf"if\s*\(\s*{re.escape(vehicle)}\s*\)")
+        dist = re.search(
+            rf"\bfloat\s+(\w+)\s*=\s*vector\.DistanceSq\s*\(\s*pos\s*,\s*{re.escape(vehicle)}\.GetPosition\s*\(\s*\)\s*\)",
+            vehicle_body,
+        )
+        self.assertIsNotNone(dist)
+        dist_name = dist.group(1)
+        seed_if = re.search(r"\bif\s*\(\s*!\s*best\s*\)", vehicle_body)
+        self.assertIsNotNone(seed_if)
+        self.assertEqual(
+            _compact(_if_condition(vehicle_body, seed_if.start())), "!best"
+        )
+        seed_body = _body_re(vehicle_body, r"if\s*\(\s*!\s*best\s*\)")
+        self.assertIn(f"best={vehicle}", _compact(seed_body))
+        acc = re.search(rf"\b(\w+)\s*=\s*{re.escape(dist_name)}\s*;", seed_body)
+        self.assertIsNotNone(acc)
+        acc_name = acc.group(1)
+        self.assertNotEqual(acc_name, "best")
+        self.assertNotEqual(acc_name, vehicle)
+        open_rel = re.search(r"\{", vehicle_body[seed_if.end() :])
+        self.assertIsNotNone(open_rel)
+        open_at = seed_if.end() + open_rel.start()
+        depth = 0
+        close_at = None
+        for index in range(open_at, len(vehicle_body)):
+            if vehicle_body[index] == "{":
+                depth += 1
+            elif vehicle_body[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    close_at = index
+                    break
+        self.assertIsNotNone(close_at)
+        trailing = vehicle_body[close_at + 1 :]
+        else_if = re.search(r"^\s*else\s+if\s*\(", trailing)
+        self.assertIsNotNone(else_if)
+        self.assertEqual(
+            _compact(_if_condition(trailing, else_if.start())),
+            f"{dist_name}<{acc_name}",
+        )
+        else_body = _body_re(trailing, r"else\s+if\s*\(")
+        else_compact = _compact(else_body)
+        self.assertIn(f"best={vehicle}", else_compact)
+        self.assertIn(f"{acc_name}={dist_name}", else_compact)
+        while_at = re.search(r"\bwhile\s*\(", finder)
+        self.assertIsNotNone(while_at)
+        self.assertRegex(
+            finder[: while_at.start()], rf"\bfloat\s+{re.escape(acc_name)}\b"
+        )
+        self.assertRegex(finder, r"\breturn\s+best\s*;")
+        self.assertIn("return", finder)
+        self.assertGreater(finder.rfind("return"), while_at.start())
+
     def test_fb_deb9_07a1_vehicle_get_in_client_description_names_nearest_to_pos(
         self,
     ) -> None:
