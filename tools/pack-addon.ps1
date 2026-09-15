@@ -1,10 +1,13 @@
 #Requires -Version 5.1
 # Pack addon/ into <DayZ>\!Workshop\@<ModName>\Addons\<ModName>.pbo with AddonBuilder.
 #
-# AddonBuilder resolves the source through the P:\ work drive, not through the path you
-# type: DayZ Tools require it and $PBOPREFIX$ is interpreted relative to it. So -Source
-# must be reachable as P:\<something>. Substituting the drive is the caller's job; this
-# script only refuses clearly to run without it, naming what it looked for.
+# The tree packed is a stage of git-tracked addon/ at -Ref (default), or of
+# -Source when that switch is passed -- not the live worktree. AddonBuilder
+# resolves the source through the P:\ work drive, not through the path you
+# type: DayZ Tools require it and $PBOPREFIX$ is interpreted relative to it.
+# So the stage folder must be reachable as P:\<something> unless -StageOnly.
+# Substituting the drive is the caller's job; this script only refuses
+# clearly to run without it, naming what it looked for.
 #
 # Launched with no arguments AddonBuilder opens its GUI and never returns, so every
 # invocation here passes source and destination positionally.
@@ -14,11 +17,24 @@ param(
   [string]$Source = "",
   [string]$Destination = "",
   [string]$ToolsPath = "",
+  [string]$Ref = "HEAD",
+  [string]$StageRoot = 'P:\temp\dayz-pack-stage',
   [switch]$Clear,
-  [switch]$PackOnly
+  [switch]$PackOnly,
+  [switch]$StageOnly
 )
 
 $ErrorActionPreference = "Stop"
+
+# Windows PowerShell 5.1 started from Git Bash inherits a Unix PSModulePath,
+# and module cmdlets such as Get-FileHash are then not recognized. Reset to
+# the machine path before any module cmdlet runs.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+  $machineModules = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+  if ($machineModules) {
+    $env:PSModulePath = $machineModules
+  }
+}
 
 function Resolve-AddonBuilder {
   param([string]$Explicit)
@@ -36,12 +52,383 @@ function Resolve-AddonBuilder {
          "`nSet DAYZ_TOOLS_PATH to your DayZ Tools folder, or pass -ToolsPath.")
 }
 
+function Get-RelativePosix([string]$Root, [string]$FullName) {
+  $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+  $full = [IO.Path]::GetFullPath($FullName)
+  if (-not $full.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Path $full is not under $rootFull"
+  }
+  $rel = $full.Substring($rootFull.Length).TrimStart('\', '/')
+  return ($rel -replace '\\', '/')
+}
+
+function Get-FileSha256Upper([string]$Path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+      $hash = $sha.ComputeHash($stream)
+    } finally {
+      $stream.Dispose()
+    }
+    return ([BitConverter]::ToString($hash) -replace '-', '').ToUpperInvariant()
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+function Test-IsExcludedFileName([string]$Name) {
+  if ($Name.StartsWith('.bak_', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  if ($Name.IndexOf('_bak_', [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+  if ($Name.IndexOf('.bak_', [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+  if ($Name.EndsWith('.md', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  return $false
+}
+
+function ConvertTo-JsonArray {
+  param($Items)
+  $parts = New-Object System.Collections.Generic.List[string]
+  if ($null -ne $Items) {
+    foreach ($item in $Items) {
+      $parts.Add((ConvertTo-Json -InputObject $item -Compress -Depth 5))
+    }
+  }
+  if ($parts.Count -eq 0) { return '[]' }
+  return ('[' + [string]::Join(',', $parts.ToArray()) + ']')
+}
+
+function ConvertTo-JsonValue {
+  param($Value)
+  if ($null -eq $Value) { return 'null' }
+  return (ConvertTo-Json -InputObject $Value -Compress -Depth 5)
+}
+
+function Get-StagedFileRecords([string]$Root) {
+  $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+  $items = New-Object System.Collections.Generic.List[object]
+  $stack = New-Object System.Collections.Generic.Stack[System.IO.DirectoryInfo]
+  $stack.Push((New-Object IO.DirectoryInfo $rootFull))
+  while ($stack.Count -gt 0) {
+    $dir = $stack.Pop()
+    foreach ($info in $dir.EnumerateFileSystemInfos()) {
+      if (($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+      if ($info -is [IO.DirectoryInfo]) {
+        $stack.Push($info)
+        continue
+      }
+      if ($info -is [IO.FileInfo]) {
+        $rel = Get-RelativePosix -Root $rootFull -FullName $info.FullName
+        $hash = Get-FileSha256Upper $info.FullName
+        $items.Add(([pscustomobject]@{ path = $rel; sha256 = $hash }))
+      }
+    }
+  }
+  $sorted = New-Object System.Collections.Generic.List[object]
+  foreach ($entry in ($items | Sort-Object -Property path)) {
+    $sorted.Add($entry)
+  }
+  return ,$sorted
+}
+
+function Copy-SourceTreeToStage {
+  param(
+    [IO.DirectoryInfo]$From,
+    [string]$ToRoot,
+    [string]$FromRoot,
+    [System.Collections.Generic.List[string]]$Excluded
+  )
+  foreach ($info in $From.EnumerateFileSystemInfos()) {
+    $rel = Get-RelativePosix -Root $FromRoot -FullName $info.FullName
+    if (($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      Write-Warning "Skipped reparse point: $rel"
+      $Excluded.Add($rel)
+      continue
+    }
+    if ($info -is [IO.DirectoryInfo]) {
+      Copy-SourceTreeToStage -From $info -ToRoot $ToRoot -FromRoot $FromRoot -Excluded $Excluded
+      continue
+    }
+    if (Test-IsExcludedFileName $info.Name) {
+      Write-Warning "Excluded: $rel"
+      $Excluded.Add($rel)
+      continue
+    }
+    $dest = Join-Path $ToRoot ($rel -replace '/', [IO.Path]::DirectorySeparatorChar)
+    $destDir = [IO.Path]::GetDirectoryName($dest)
+    if (-not (Test-Path -LiteralPath $destDir)) {
+      New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    }
+    [IO.File]::Copy($info.FullName, $dest, $true)
+  }
+}
+
+function New-PackStageFolder([string]$Root, [string]$Name) {
+  if ([string]::IsNullOrWhiteSpace($Root)) {
+    throw "StageRoot is empty"
+  }
+  $batch = Join-Path $Root ([guid]::NewGuid().ToString('D'))
+  $stage = Join-Path $batch $Name
+  New-Item -ItemType Directory -Force -Path $stage | Out-Null
+  return [IO.Path]::GetFullPath($stage)
+}
+
+function Invoke-Git {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
+    [Parameter(Mandatory = $true)][string[]]$ArgumentList
+  )
+  # Native git warnings on stderr become NativeCommandError when that stream is
+  # redirected. Stop would abort a command that exited 0; only $LASTEXITCODE
+  # decides, matching the AddonBuilder invocation.
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & git -C $RepoRoot @ArgumentList
+  } finally {
+    $ErrorActionPreference = $previousPreference
+  }
+}
+
+function Get-PathWithTrailingSeparator([string]$Path) {
+  $full = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+  return ($full + [IO.Path]::DirectorySeparatorChar)
+}
+
+function Test-NormalizedPathOverlap([string]$Left, [string]$Right) {
+  # Trailing separator so C:\x\addon2 is not treated as inside C:\x\addon.
+  $a = Get-PathWithTrailingSeparator $Left
+  $b = Get-PathWithTrailingSeparator $Right
+  if ($a.Equals($b, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  if ($a.StartsWith($b, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  if ($b.StartsWith($a, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  return $false
+}
+
+function Get-GitBlobId([string]$FilePath) {
+  $data = [IO.File]::ReadAllBytes($FilePath)
+  $header = [Text.Encoding]::ASCII.GetBytes("blob $($data.Length)")
+  $payload = New-Object byte[] ($header.Length + 1 + $data.Length)
+  [Array]::Copy($header, 0, $payload, 0, $header.Length)
+  $payload[$header.Length] = 0
+  if ($data.Length -gt 0) {
+    [Array]::Copy($data, 0, $payload, $header.Length + 1, $data.Length)
+  }
+  $sha1 = [System.Security.Cryptography.SHA1]::Create()
+  try {
+    $hash = $sha1.ComputeHash($payload)
+    return ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+  } finally {
+    $sha1.Dispose()
+  }
+}
+
+function ConvertFrom-GitLsTreeLine([string]$Line) {
+  $text = $Line.TrimEnd("`r")
+  $tab = $text.IndexOf([char]9)
+  if ($tab -lt 0) {
+    throw "git ls-tree line is not '<mode> <type> <id><TAB><path>': $text"
+  }
+  $meta = $text.Substring(0, $tab)
+  $gitPath = $text.Substring($tab + 1)
+  $parts = $meta -split ' ', 3
+  if ($parts.Count -ne 3 -or [string]::IsNullOrWhiteSpace($parts[0]) -or
+      [string]::IsNullOrWhiteSpace($parts[1]) -or [string]::IsNullOrWhiteSpace($parts[2])) {
+    throw "git ls-tree line is not '<mode> <type> <id><TAB><path>': $text"
+  }
+  return [pscustomobject]@{
+    Mode = $parts[0]
+    Type = $parts[1]
+    Id   = $parts[2]
+    Path = $gitPath
+  }
+}
+
+function Test-OrdinalInList {
+  param(
+    [System.Collections.Generic.List[string]]$Items,
+    [string]$Value
+  )
+  foreach ($item in $Items) {
+    if ([string]::Equals([string]$item, $Value, [StringComparison]::Ordinal)) { return $true }
+  }
+  return $false
+}
+
+function Assert-StageMatchesGitTree {
+  param(
+    [string]$StageDir,
+    [System.Collections.Generic.List[object]]$Entries,
+    [string]$CommitSha
+  )
+  $treeRels = New-Object System.Collections.Generic.List[string]
+  $blobEntries = New-Object System.Collections.Generic.List[object]
+  foreach ($entry in $Entries) {
+    $gitPath = [string]$entry.Path
+    if ($gitPath.StartsWith('"')) {
+      throw "Refusing to pack git-quoted path (rename the file so git does not quote it): $gitPath"
+    }
+    if ($entry.Mode -eq '120000' -or $entry.Mode -eq '160000') {
+      throw "Refusing to pack git symlink or submodule (mode $($entry.Mode)): $gitPath"
+    }
+    if (-not $gitPath.StartsWith('addon/')) {
+      throw "git ls-tree path is not under addon/: $gitPath"
+    }
+    $rel = $gitPath.Substring(6)
+    $treeRels.Add($rel)
+    if ($entry.Type -eq 'blob') {
+      $blobEntries.Add([pscustomobject]@{
+        Path = $rel
+        Id   = ([string]$entry.Id).ToLowerInvariant()
+      })
+    }
+  }
+
+  $stagedRels = New-Object System.Collections.Generic.List[string]
+  foreach ($record in (Get-StagedFileRecords -Root $StageDir)) {
+    $stagedRels.Add([string]$record.path)
+  }
+
+  $missing = New-Object System.Collections.Generic.List[string]
+  $extra = New-Object System.Collections.Generic.List[string]
+  $different = New-Object System.Collections.Generic.List[string]
+  foreach ($rel in $treeRels) {
+    if (-not (Test-OrdinalInList -Items $stagedRels -Value $rel)) { $missing.Add($rel) }
+  }
+  foreach ($rel in $stagedRels) {
+    if (-not (Test-OrdinalInList -Items $treeRels -Value $rel)) { $extra.Add($rel) }
+  }
+  foreach ($blob in $blobEntries) {
+    if (-not (Test-OrdinalInList -Items $stagedRels -Value $blob.Path)) { continue }
+    $stagedFile = Join-Path $StageDir ($blob.Path -replace '/', [IO.Path]::DirectorySeparatorChar)
+    $got = Get-GitBlobId $stagedFile
+    if (-not [string]::Equals($got, [string]$blob.Id, [StringComparison]::Ordinal)) {
+      $different.Add($blob.Path)
+    }
+  }
+
+  if ($missing.Count -gt 0 -or $extra.Count -gt 0 -or $different.Count -gt 0) {
+    $bits = New-Object System.Collections.Generic.List[string]
+    if ($missing.Count -gt 0) { $bits.Add('missing: ' + ($missing -join ', ')) }
+    if ($extra.Count -gt 0) { $bits.Add('extra: ' + ($extra -join ', ')) }
+    if ($different.Count -gt 0) { $bits.Add('different: ' + ($different -join ', ')) }
+    throw ("Staged tree does not match the commit tree at $CommitSha. " +
+           ($bits -join '; ') +
+           '. .gitattributes (export-ignore, export-subst, eol, filters) can make git archive differ from the commit.')
+  }
+}
+
 if ($ModName -notmatch '^[A-Za-z][A-Za-z0-9_]{0,63}$') {
   # The name doubles as a C-style identifier in CfgPatches, so a hyphen does not parse.
   throw "ModName must match ^[A-Za-z][A-Za-z0-9_]{0,63}$ (no hyphens): '$ModName'"
 }
 
-if (-not $Source) { $Source = "P:\$ModName" }
+$folderMode = -not [string]::IsNullOrWhiteSpace($Source)
+$excluded = New-Object System.Collections.Generic.List[string]
+$commitSha = $null
+$sourceKind = 'git'
+$fromRoot = $null
+$fromInfo = $null
+
+# Validate Source and resolve Destination before creating the stage. A StageRoot
+# inside Source copies into itself; a StageRoot equal to Destination writes under
+# Destination even with -StageOnly.
+if ($folderMode) {
+  $sourceKind = 'folder'
+  if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+    throw "Source not found: $Source`nAddonBuilder reads through the P:\ work drive; see README."
+  }
+  $fromRoot = [IO.Path]::GetFullPath($Source)
+  $fromInfo = New-Object IO.DirectoryInfo $fromRoot
+  if (($fromInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Source is a reparse point (junction or symlink); refusing to follow it: $fromRoot"
+  }
+}
+
+if (-not $Destination) {
+  $workshop = "C:\Program Files (x86)\Steam\steamapps\common\DayZ\!Workshop"
+  if ($env:DAYZ_PATH) { $workshop = Join-Path $env:DAYZ_PATH "!Workshop" }
+  $Destination = Join-Path $workshop "@$ModName\Addons"
+}
+
+$stageRootFull = [IO.Path]::GetFullPath($StageRoot)
+$destinationFull = [IO.Path]::GetFullPath($Destination)
+if ($folderMode -and (Test-NormalizedPathOverlap $stageRootFull $fromRoot)) {
+  throw "StageRoot overlaps Source: $stageRootFull $fromRoot"
+}
+if (Test-NormalizedPathOverlap $stageRootFull $destinationFull) {
+  throw "StageRoot overlaps Destination: $stageRootFull $destinationFull"
+}
+
+$stage = New-PackStageFolder -Root $StageRoot -Name $ModName
+$batchDir = Split-Path -Parent $stage
+
+if ($folderMode) {
+  Copy-SourceTreeToStage -From $fromInfo -ToRoot $stage -FromRoot $fromRoot -Excluded $excluded
+} else {
+  # git archive reads the commit tree, so a junction or a dirty worktree file
+  # cannot enter the stage.
+  $repoRoot = Split-Path -Parent $PSScriptRoot
+  $resolved = Invoke-Git -RepoRoot $repoRoot -ArgumentList @('rev-parse', '--verify', "$Ref^{commit}")
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($resolved)) {
+    throw "Could not resolve git ref '$Ref' to a commit in $repoRoot."
+  }
+  $commitSha = ([string]$resolved).Trim()
+  $treeRaw = Invoke-Git -RepoRoot $repoRoot -ArgumentList @('ls-tree', '-r', $commitSha, '--', 'addon')
+  if ($LASTEXITCODE -ne 0) {
+    throw "git ls-tree of addon/ at $commitSha failed with exit $LASTEXITCODE"
+  }
+  $treeLines = @()
+  if ($null -ne $treeRaw -and "$treeRaw" -ne '') { $treeLines = @($treeRaw) }
+  $treeEntries = New-Object System.Collections.Generic.List[object]
+  foreach ($line in $treeLines) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    $treeEntries.Add((ConvertFrom-GitLsTreeLine $line))
+  }
+  foreach ($entry in $treeEntries) {
+    if ($entry.Mode -eq '120000' -or $entry.Mode -eq '160000') {
+      throw "Refusing to pack git symlink or submodule (mode $($entry.Mode)): $($entry.Path)"
+    }
+  }
+  $zipFile = Join-Path $batchDir 'addon.zip'
+  # One-shot -c: git archive --format=zip otherwise writes CRLF on Windows
+  # (core.autocrlf), which would not match the blob bytes.
+  $null = Invoke-Git -RepoRoot $repoRoot -ArgumentList @(
+    '-c', 'core.autocrlf=false', 'archive', '--format=zip', '-o', $zipFile, "${commitSha}:addon"
+  )
+  if ($LASTEXITCODE -ne 0) {
+    throw "git archive of ${commitSha}:addon failed with exit $LASTEXITCODE"
+  }
+  Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($zipFile, $stage)
+  # git archive applies .gitattributes; the stage must still equal the commit tree.
+  Assert-StageMatchesGitTree -StageDir $stage -Entries $treeEntries -CommitSha $commitSha
+}
+
+$prefixFile = Join-Path $stage '$PBOPREFIX$'
+if (-not (Test-Path -LiteralPath $prefixFile)) {
+  throw "No `$PBOPREFIX`$ in $stage -- that file is what makes it an addon source tree."
+}
+
+$files = Get-StagedFileRecords -Root $stage
+$excluded.Sort()
+
+if ($StageOnly) {
+  $json = ('{"commit":' + (ConvertTo-JsonValue $commitSha) +
+    ',"source":' + (ConvertTo-JsonValue $sourceKind) +
+    ',"stage":' + (ConvertTo-JsonValue $stage) +
+    ',"files":' + (ConvertTo-JsonArray $files) +
+    ',"excluded":' + (ConvertTo-JsonArray $excluded) + '}')
+  Write-Output $json
+  exit 0
+}
+
+$stageFull = [IO.Path]::GetFullPath($stage)
+if (-not $stageFull.StartsWith('P:\', [StringComparison]::OrdinalIgnoreCase)) {
+  throw ("Stage folder is not under P:\ (AddonBuilder reads through the P:\ work drive): $stageFull")
+}
+
+$Source = $stageFull
+
 if (-not $Destination) {
   $workshop = "C:\Program Files (x86)\Steam\steamapps\common\DayZ\!Workshop"
   if ($env:DAYZ_PATH) { $workshop = Join-Path $env:DAYZ_PATH "!Workshop" }

@@ -29,10 +29,13 @@ cd tools
 
 **3 — Pack the addon** into `<DayZ>\!Workshop\@DayZ_MCP\Addons\DayZ_MCP.pbo`. Set
 `DAYZ_TOOLS_PATH` if DayZ Tools are not under `C:\Program Files (x86)`; the script names
-every path it tried before failing. `addon\include.lst` decides what goes in — without it
-AddonBuilder packs the whole folder, editor backups included:
+every path it tried before failing. The script packs the git-tracked `addon/` of the
+commit named by `-Ref` (default `HEAD`) through a stage folder under
+`P:\temp\dayz-pack-stage`, so commit first, because uncommitted edits and untracked files
+are not packed. `-Source <folder>` packs a plain folder instead and copies every file
+except editor backups and Markdown:
 ```powershell
-.\pack-addon.ps1 -Source "P:\addon" -ModName DayZ_MCP
+.\pack-addon.ps1 -ModName DayZ_MCP
 ```
 
 **4 — Load it.** Add `-mod=<DayZ>\!Workshop\@DayZ_MCP` to your existing server command

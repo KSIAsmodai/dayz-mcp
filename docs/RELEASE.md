@@ -28,18 +28,19 @@ Use `--allow-dirty` only for an explicitly non-published rehearsal.
 
 The packer header states that the source must be reachable through `P:\` and that
 DayZ Tools are required
-([`tools/pack-addon.ps1:1-7`](../tools/pack-addon.ps1#L1-L7)). Do not run this step
+([`tools/pack-addon.ps1:2-10`](../tools/pack-addon.ps1#L2-L10)). Do not run this step
 on a host without that environment.
 
 [EXACT]
 
 ```powershell
-.\tools\pack-addon.ps1 -Source "P:\addon" -ModName DayZ_MCP
+.\tools\pack-addon.ps1 -ModName DayZ_MCP
 ```
 
+It packs the committed `addon/` at HEAD, which step 1 left clean.
 The script prints the resulting `DayZ_MCP.pbo` path and byte size after
 AddonBuilder succeeds
-([`tools/pack-addon.ps1:88-90`](../tools/pack-addon.ps1#L88-L90)). Record that
+([`tools/pack-addon.ps1:565-565`](../tools/pack-addon.ps1#L565-L565)). Record that
 printed path; do not substitute a source-tree file or an older deployed PBO.
 
 ## 3. Stage the release assets

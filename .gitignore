@@ -49,3 +49,6 @@ tools/_broker/e2e_result.json
 tools/_session_coordination/e2e_result.json
 tools/_session_coordination/*probe*.json
 tools/_session_coordination/*preflight*.json
+
+# Default stage folder of pack-addon.ps1 when P: maps to the clone.
+/temp/dayz-pack-stage/
