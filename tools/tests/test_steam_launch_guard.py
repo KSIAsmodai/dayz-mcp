@@ -64,7 +64,7 @@ class Host(MemoryHost):
 
     def invoke_steam(self, executable, args):
         super().invoke_steam(executable, args)
-        if args == ("-silent",):
+        if args == ("-silent",) and getattr(self, "refresh_created_on_restart", True):
             self.provider.created = ticks(0)  # restart can reuse the same PID
 
 
@@ -157,6 +157,54 @@ class SteamLifetimeTests(unittest.TestCase):
         provider.process_creation_ticks = lambda pid: None
         result, _ = self.prepare(provider)
         self.assertEqual(result.error_code, "steam_session_stale")
+
+    def test_fb_1f21_restart_with_unchanged_identity_still_waits_for_marker(self):
+        provider = Provider(stale=True)
+        host = Host(provider)
+        host.write_error = OSError("fake failed write")
+        host.refresh_created_on_restart = False
+        host.on_sleep = lambda: setattr(provider, "marker", host.now >= 3)
+        result, _ = self.prepare(provider, True, host)
+        self.assertTrue(result.restarted)
+        self.assertGreaterEqual(host.now, 3)
+        self.assertEqual(result.startup, "observed")
+
+    def test_fb_1f21_repaired_identity_change_still_waits_for_marker(self):
+        provider = Provider(stale=True)
+        host = Host(provider)
+        host.after_write = lambda: setattr(provider, "created", ticks(500))
+        host.on_sleep = lambda: setattr(provider, "marker", host.now >= 2)
+        result, _ = self.prepare(provider, True, host)
+        self.assertEqual(result.pid_repair, "applied")
+        self.assertFalse(result.restarted)
+        self.assertGreaterEqual(host.now, 2)
+        self.assertEqual(result.startup, "observed")
+
+    def test_fb_1f21_raising_marker_probe_waits_until_true(self):
+        provider = Provider(age=1)
+        remaining = [1, 1]
+
+        def probe(pid):
+            if remaining:
+                remaining.pop()
+                raise OSError("startup log unreadable")
+            return True
+
+        provider.steam_startup_complete = probe
+        result, host = self.prepare(provider)
+        self.assertIsNone(result.error_code)
+        self.assertEqual(result.startup, "observed")
+        self.assertGreaterEqual(host.now, 0.4)
+
+    def test_fb_1f21_truthy_non_true_marker_is_not_observed(self):
+        for value in (1, "yes"):
+            with self.subTest(marker=value):
+                provider = Provider(age=1, marker=value)
+                host = Host(provider)
+                with self.assertRaises(guard.PreparationCancelled) as raised:
+                    guard.prepare(provider, host, False, wall_time=lambda: WALL)
+                self.assertEqual(raised.exception.code, "steam_prepare_timeout")
+                self.assertEqual(host.now, guard.PREPARE_BUDGET_S)
 
 
 class ScriptedHelper:
