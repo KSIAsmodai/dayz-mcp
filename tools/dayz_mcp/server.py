@@ -48,6 +48,7 @@ from dayz_mcp.core import EXPECTED_BRIDGE_VERSION
 from dayz_mcp.effective_schema_core import project_server_config_identity
 from dayz_mcp.tool_registry_fingerprint import capture_registry_snapshot
 from dayz_mcp.knowledge import register_knowledge_tools
+from dayz_mcp.occupant_seat import occupant_client_seated
 from dayz_mcp.server_freshness import (
     REMEDIATION as _TOOL_REGISTRY_REMEDIATION,
     ServerSourceWatch,
@@ -130,28 +131,6 @@ _RETAIL_QUARANTINE_REASONS = frozenset({
     "retail_present",
 })
 LEASE_TOOL_LINE = "Requires a lease (session_acquire_wait)."
-
-
-def _wire_bool(value: object) -> bool | None:
-    if value is True or value == 1:
-        return True
-    if value is False or value == 0:
-        return False
-    return None
-
-
-def occupant_client_seated(telemetry: object) -> bool:
-    """True when the client owns a seated occupant (vehicle_get_in_client).
-
-    Server SetTransform of that transport desyncs the owning client
-    (fb-20260915-014733-81f3). Authority-owned seating still moves the
-    transport; an unreadable telemetry payload is not treated as seated.
-    """
-    if not isinstance(telemetry, dict):
-        return False
-    if _wire_bool(telemetry.get("seated")) is not True:
-        return False
-    return _wire_bool(telemetry.get("is_authority_owner")) is not True
 
 # Vanilla ECE_* from centraleconomy.c. world_spawn flags=0 is the documented
 # surface default (bridge applies ECE_PLACE_ON_SURFACE). Non-zero values must
