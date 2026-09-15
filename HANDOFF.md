@@ -1,64 +1,54 @@
 # HANDOFF — DayZ-MCP
 
 <!-- LIVE-STATE:START -->
-# DayZ-MCP — Estado vivo · snapshot 2026-09-15 (tras la Ola 2 in-game)
+# DayZ-MCP — Estado vivo · snapshot 2026-09-15 (tras verificar #57 in-game)
 
-**Última verificación real:** 2026-09-15 03:47.
-- **Árbol vivo `P:\DayZ_MCP_dev`:** `main` en `d4516cb` (#55). Sin cambios de código desde la tercera promoción.
-- **Daemon:** generación `b612ae38…`. Un cliente lo relanzó a las 02:42, con el argv canónico, después de que se apagara por inactividad. `daemon_modules.stale=[]`. Caja vacía al cerrar.
-- **PBO desplegado:** `7DE421C5…` (254098 B), empaquetado sin binarizar desde `addon/` en `d4516cb`. Sus 13 entradas son idénticas a `9a44ef9` (#44 y #54). Copia del anterior: `DayZ_MCP.pbo.bak_pre_ola2_20260915` (`F77AAC3E`).
+**Última verificación real:** 2026-09-15 12:55.
+- **Árbol vivo `P:\DayZ_MCP_dev`:** `main` en `6096446` (#57, de otra línea de trabajo: arreglos de `bcd8`, `ba70`, `7ad1` y `81f3`).
+- **Daemon:** generación `baa46ba4…`, `daemon_modules.stale=[]`. Caja vacía al cerrar.
+- **PBO desplegado:** `EB62B4E7…` (254861 B), empaquetado sin binarizar desde un export limpio de `addon/` en `6096446`. Sus 13 entradas son idénticas a git y no lleva ninguna ajena. Copia del anterior: `DayZ_MCP.pbo.bak_pre_pr57_20260915` (`7DE421C5`).
+- **Launcher nativo:** reconstruido tras #57 con el OK del dueño. PE `67D974AF…`, igual en las 3 compilaciones; registro `1CBC9ED4…`.
 
-bugs: tracker = buzón `pipeline_inbox` · **30** abiertas (censo 2026-09-15 03:50: 22 + 3 de otras sesiones + 7 nuevas − 2 resueltas, `deb9` y `07a1`) · toque 2026-09-15
-ciclos_en_este_objetivo: 1 (triaje del buzón + promoción + Ola 1 + segunda promoción + 160e y delegables + tercera promoción + Ola 2)
+bugs: tracker = buzón `pipeline_inbox` · **29** abiertas (censo 2026-09-15 12:53: 30 + 4 nuevas − 5 resueltas) · toque 2026-09-15
+ciclos_en_este_objetivo: 1 (triaje del buzón + promociones + Ola 1 + 160e y delegables + Ola 2 + verificación de #57)
 
 ## Estado actual
 
-- **Ola 2 in-game hecha,** en cuatro runs, uno por coche (D-73):
-  - **G7 de `deb9`, verde:** las subidas van separadas 3,85 s y no hay segunda subida dentro de la ventana de 0,3 s. Ficha resuelta.
-  - **`07a1`, verde:** el get-in elige el coche más cercano a `pos`. Ficha resuelta.
-  - **G3, verde en vivo con `CivilianSedan`:** 20 Hz, dueño y net id estables, readback 0,0 y contacto de carrocería. Faltan los criterios offline, como el bundle byte-idéntico.
-  - **BUG-040, verde. BUG-113:** los cuatro lanzamientos fueron bien. **time/weather:** cambio visible y restaurado.
-  - **`f47b`, reproducido y agravado:** `restore_gameplay` devuelve `ok` con el render congelado (`b0d9`).
-  - **Canario de BUG-096, inconcluso:** solo hay una cuenta de Steam (`ba11`, reconfirma `e4cf`).
-  - **`3bb4`:** `key_press(1)` sin menú abierto no abre nada; cerrar un menú sigue sin probar.
-  - **`b1ff` I1:** sin receta vanilla. **`f298`:** sin confirmación del dueño. **BUG-083:** sin repro. **BUG-069:** aparcado.
-- **Trampas medidas al conducir el MCP:**
-  - `vehicle_release` antes de `vehicle_trace(stop)` tira la traza (`7ad1`). Primero `stop`, en otra llamada.
-  - Tras `vehicle_get_in_client` no hay forma de bajar del coche, y `player_teleport` con el jugador sentado desincroniza cliente y servidor (`81f3`). Un coche por run.
-  - El lease caduca en pausas de más de 120 s (`d85b`, parecida a `8d68`). Hay que usar `session_heartbeat`.
-  - `capture_screenshot` falla con el `PSModulePath` heredado (`ba70`). Capturar con `env -u PSModulePath`.
-  - `pack-addon.ps1` muere si algún `config.cpp` bajo `P:\` no parsea (`bcd8`). Empaquetar con `-packonly` desde `addon/`.
+- **#57 verificado in-game** en el run `0be29aea`, con un solo coche (D-74):
+  - **`bcd8`:** `pack-addon.ps1` pasa `-packonly` y empaqueta aunque haya un `config.cpp` roto bajo `P:\`. Resuelta.
+  - **`ba70`:** `capture_screenshot` funciona sin workaround con el `PSModulePath` heredado. Resuelta.
+  - **`7ad1`:** `vehicle_release` sin `stop` previo vuelca la traza (`stop_reason=vehicle_release`). Resuelta.
+  - **`81f3`:** `player_teleport` del jugador sentado devuelve `occupant_client_seated` sin desincronizar. Resuelta.
+- **Encontrado al verificar:**
+  - **Launcher sin resellar (`de68`, resuelta):** #57 cambió un módulo que va embebido en el launcher, y ningún `dayz_test_run` lanzaba, en ninguna sesión, hasta reconstruirlo. Repite `1025`, cuya guarda sigue pendiente.
+  - **`63c9`:** con `-packonly`, AddonBuilder ignora `include.lst`, y el pack por defecto mete en el PBO los `.bak_*` y el `CLAUDE.md` de `P:\DayZ_MCP`. Empaquetar desde un export limpio.
+  - **`1004`:** `object_delete` del coche con el cliente sentado deja el render del cliente en negro, aunque las descripciones de #57 lo recomienden.
+  - **`f298` (medida en `fade`):** una sonda pasiva no ve el cursor confinado; los procesos DayZ toman el foco 1-2,5 s al arrancar y el join no lo cambia. Falta la confirmación del dueño.
+- **Trampas vigentes al conducir el MCP:** un coche por run; `stop` antes de `release`; heartbeat en pausas de más de 120 s (`d85b`); resellar el launcher si cambia un módulo empaquetado.
 
 ## Tickets
 
 GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido del buzón en commits). El tracker real es el buzón (`pipeline_inbox` / `pipeline_feedback` / `pipeline_resolve`) en `%LOCALAPPDATA%\DayZ_MCP\inbox\feedback.jsonl`, con ids `fb-AAAAMMDD-HHMMSS-xxxx` citados por sufijo.
 
-- **Resueltas en la Ola 2:** `deb9` y `07a1`. Puntero local de evidencia, sin versionar: `reviews/ola2-2026-09-15/EVIDENCE.md`.
-- **Nuevas en la Ola 2:**
-  - `bcd8`: `pack-addon.ps1` y binarize;
-  - `ba70`: captura y `PSModulePath`;
-  - `b0d9`: el falso verde de `f47b`;
-  - `81f3`: teletransporte con el jugador sentado;
-  - `7ad1`: `release` tira la traza;
-  - `d85b`: lease en pausas;
-  - `ba11`: canario.
+- **Resueltas al verificar #57:** `bcd8`, `ba70`, `7ad1`, `81f3` y `de68`. Puntero local de evidencia, sin versionar: `reviews/post57-2026-09-15/EVIDENCE.md`.
+- **Nuevas:** `de68` (ya resuelta), `63c9`, `1004` y `fade`.
 - **Abiertas con resto:**
-  - `f47b` y `f298`;
+  - `f47b` (HOLD), `b0d9` y `f298`;
   - `3bb4`;
-  - `c261`: falta observar la recuperación desde un rechazo untrusted;
+  - `1025`: la guarda contra módulos empaquetados sin resellar;
   - `e4be`, `88ef` y `305a`;
+  - `d85b` y `ba11`;
   - `7ef2`, `dff2` y `6d18`.
 
 ## Próxima acción
 
 1. **Sin juego:**
-   - `pack-addon.ps1` con `-packonly` para addons sin assets binarizables (`bcd8`);
-   - `mcp_capture` sin `PSModulePath` (`ba70`);
-   - autodump en el `Abort` de la traza (`7ad1`);
-   - `player_teleport` sin desincronizar (`81f3`);
-   - `e4be`, `88ef` y `305a`, y los P2 3-5 de la review de `deb9`.
+   - `63c9`: que `pack-addon.ps1` empaquete desde un staging filtrado por `include.lst`;
+   - `1004`: corregir la descripción, o que `object_delete` rechace el coche con ocupante de cliente;
+   - la guarda de `1025`;
+   - `e4be`, `88ef` y `305a`, los P2 3-5 de la review de `deb9`, `d85b` y `ba11`.
 2. **`f47b`:** encontrar la causa del congelado y un detector que no dependa de la captura. El dueño lo confirma a la vista.
-3. **Con el dueño delante:** `f298` (el ratón al entrar).
+3. **Con el dueño delante:** `f298` (el ratón al entrar), con la sonda de `fade`.
 4. **Decisiones de dueño pendientes:** modelo de cola `2223`, parada ordenada `8604`, `8bc6`, PARO/PARK (`3fc1`/`dce1`/`1025`, `2edd`-1, `dae1`-1/2) y BUG-069.
 
 ## Invariantes CERRADAS — NO retocar / NO reabrir sin ángulo nuevo
@@ -72,19 +62,21 @@ GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido 
 - **Wire:** un texto persistido o de identidad solo sale en payloads públicos tras pasar una lista blanca de forma (sello UTC en `control_client`, token de generación en `process_lifecycle`). Un parser no es un filtro (D-70).
 - **Retención de copias de manifest (`160e`):** se conservan las 200 más nuevas y las que nombra el puntero o un fault. No se borra nada si el puntero o un fault son ilegibles o si una entrada no se puede clasificar. La ventana TOCTOU del unlink por ruta es un límite aceptado (D-72, `e4be`).
 - **`deb9` y `07a1`:** verificados in-game con el PBO `7DE421C5` (D-73).
+- **`bcd8`, `ba70`, `7ad1` y `81f3`:** verificados in-game con el PBO `EB62B4E7` (D-74).
 
 ## Punteros (detalle)
 
-- Decisiones D-69 a D-73: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\decisions\decision-log.md`
+- Decisiones D-69 a D-74: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\decisions\decision-log.md`
 - Evidencia de la Ola 1 y de la segunda promoción: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-ola1\`
 - Evidencia de la 160e, las delegables y la tercera promoción: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-delegables\`
 - Evidencia de la Ola 2 (trazas, canario, logs de `f47b`, scripts y manifiesto de capturas): `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-15-ola2\`
-- Sesiones: `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-14-dayzmcp-tercera-promocion.md` y `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-15-dayzmcp-ola2.md`
+- Evidencia de la verificación de #57 (traza, logs, procedencia de los dos empaquetados, launcher y sonda de `f298`): `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-15-post57\`
+- Sesiones: `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-15-dayzmcp-ola2.md` y `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-15-dayzmcp-post57.md`
 - Runbook de promoción a vivo: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-delegables\promote3\RUNBOOK.md`
 - Histórico pre-v1.2: [`HANDOFF-ARCHIVE.md`](HANDOFF-ARCHIVE.md)
 - `NEXT-SESSION-PROMPT.txt` es de **22-ago** y está **obsoleto**. No usarlo.
 
-**Gate de arranque:** `Retomo DayZ-MCP desde: Ola 2 in-game HECHA (deb9/07a1 verificados, G3 verde, f47b reproducido; PBO 7DE421C5) · 30 fichas abiertas · próxima acción: fixes sin juego (bcd8, ba70, 7ad1, 81f3) y f47b`
+**Gate de arranque:** `Retomo DayZ-MCP desde: #57 verificado in-game (bcd8/ba70/7ad1/81f3 resueltas; PBO EB62B4E7, launcher resellado) · 29 fichas abiertas · próxima acción: 63c9, 1004 y guarda de 1025 sin juego; f47b`
 <!-- LIVE-STATE:END -->
 
 ---
