@@ -638,6 +638,16 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
     def test_same_client_retry_is_bounded_while_first_audit_is_stuck(self) -> None:
         entered = threading.Event()
         resume = threading.Event()
+        audit_left = threading.Event()
+        retry_thread = threading.current_thread()
+        retry_wait_timeouts: list[float | None] = []
+
+        class WaitProbe(threading.Condition):
+            def wait(self, timeout: float | None = None) -> bool:
+                # Once the first audit is stuck, the test thread only runs the retry.
+                if entered.is_set() and threading.current_thread() is retry_thread:
+                    retry_wait_timeouts.append(timeout)
+                return super().wait(timeout)
 
         def audit(event: dict[str, object]) -> bool:
             client = event.get("client") or {}
@@ -646,12 +656,16 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
                 and client.get("session") == IDENTITY_B.session_id[:12]
             ):
                 entered.set()
-                resume.wait(1.0)
+                # Stuck until the retry has answered; the timeout only ends a retry
+                # that waits for this audit instead of answering.
+                resume.wait(5.0)
+                audit_left.set()
             return True
 
         coordinator = SessionCoordinator(
             token_fn=Sequence("token"), id_fn=Sequence("lease"), audit=audit
         )
+        coordinator._condition = WaitProbe()
         coordinator.acquire(IDENTITY, "owner")
         first_result: list[tuple[int, dict]] = []
         first = threading.Thread(
@@ -661,17 +675,25 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
         )
         first.start()
         self.assertTrue(entered.wait(1.0))
-        started_at = time.monotonic()
         try:
             retry_status, retry_payload = coordinator.acquire(IDENTITY_B, "same")
-            elapsed = time.monotonic() - started_at
+            answered_while_audit_stuck = not audit_left.is_set()
         finally:
             resume.set()
             first.join(2.0)
 
-        self.assertLess(elapsed, 0.20)
+        self.assertTrue(answered_while_audit_stuck)
         self.assertEqual(retry_status, 503)
         self.assertEqual(retry_payload["error"], "audit_failed")
+        # The bound is the timeout the reservation wait passes, not wall-clock time:
+        # scheduler latency delays the answer but cannot raise it. Every wait (none
+        # if the deadline passed before the first) stays within
+        # RELEASE_AUDIT_TIMEOUT_S, up to float rounding of deadline - now.
+        self.assertNotIn(None, retry_wait_timeouts)
+        self.assertLessEqual(
+            max(retry_wait_timeouts, default=0.0),
+            coordination_module.RELEASE_AUDIT_TIMEOUT_S + 1e-6,
+        )
         self.assertEqual(first_result[0][0], 202)
 
     def test_queue_fifo_follows_ticket_creation_not_audit_completion(self) -> None:
