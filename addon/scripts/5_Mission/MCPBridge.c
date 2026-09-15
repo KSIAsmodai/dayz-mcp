@@ -1193,10 +1193,23 @@ class MCPBridge : Managed
 		{
 			veh = vehicleCommand.GetTransport();
 		}
+		if (!veh)
+		{
+			veh = Transport.Cast(player.GetParent());
+		}
 
 		vector applied;
 		if (veh)
 		{
+			CarScript car = CarScript.Cast(veh);
+			// Client-owned seat (vehicle_get_in_client): SetTransform desyncs
+			// the owning client (fb-20260915-014733-81f3).
+			if (!car || !car.IsAuthorityOwner())
+			{
+				result.ok = false;
+				result.error = "occupant_client_seated";
+				return true;
+			}
 			vector mat[4];
 			veh.GetTransform(mat);
 			mat[3] = position;
@@ -1204,6 +1217,12 @@ class MCPBridge : Managed
 			// The occupant's own position lags the transport until the next sim frame;
 			// the transport is what moved, so it is what pos_real reports.
 			applied = veh.GetPosition();
+		}
+		else if (player.IsInTransport())
+		{
+			result.ok = false;
+			result.error = "occupant_client_seated";
+			return true;
 		}
 		else
 		{

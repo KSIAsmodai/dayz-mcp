@@ -214,6 +214,12 @@ class VehicleTraceEnforceSourceContractTest(unittest.TestCase):
         self.assertIn('MCPVehicleTrace.Abort("vehicle_release");', release)
         shutdown = _method_body(bridge, "void Shutdown()")
         self.assertIn('MCPVehicleTrace.Abort("shutdown");', shutdown)
+        abort = _method_body(
+            CAR_SCRIPT.read_text(encoding="utf-8"),
+            "static void Abort(string reason)",
+        )
+        self.assertIn("Dump(s_TraceId)", abort)
+        self.assertLess(abort.index("Dump("), abort.index("ClearState("))
 
     def _assert_on_input_throttle_latch(self, on_input: str) -> None:
         self.assertIn("MCPCarDrive.s_TickEngineReady = false;", on_input)

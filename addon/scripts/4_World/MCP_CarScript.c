@@ -361,6 +361,17 @@ class MCPVehicleTrace
 		{
 			return;
 		}
+		// Autodump remaining samples before the wipe (fb-20260915-014739-7ad1).
+		// Prefer vehicle_trace mode=stop in a separate call, then release.
+		if (s_Count > 0)
+		{
+			s_Active = false;
+			if (s_StopReason == "")
+			{
+				s_StopReason = reason;
+			}
+			Dump(s_TraceId);
+		}
 		ClearState();
 		s_LastError = reason;
 	}

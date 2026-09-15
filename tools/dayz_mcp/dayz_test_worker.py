@@ -574,6 +574,7 @@ async def _start(
 
 
 def _default_has_assets(source: str) -> bool:
+    # Same suffix set as dayz_mcp.pack_only.BINARIZABLE_SUFFIXES / pack-addon.ps1.
     try:
         return any(
             path.suffix.casefold() in {".p3d", ".paa", ".rvmat"}

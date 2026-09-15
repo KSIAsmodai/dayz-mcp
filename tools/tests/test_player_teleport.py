@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -11,6 +12,7 @@ from dayz_mcp.session_coordination import READ_ONLY_COMMANDS, command_requires_l
 COMMAND = "player_teleport"
 VALID_ARGS = {"pos": [7500.0, 0.0, 7500.0]}
 BRIDGE_PATH = addon_root() / "scripts" / "5_Mission" / "MCPBridge.c"
+ON_FOOT = {"ok": 1, "seated": 0, "is_authority_owner": 0}
 
 
 def _method_body(source: str, signature: str) -> str:
@@ -25,6 +27,18 @@ def _method_body(source: str, signature: str) -> str:
             if depth == 0:
                 return source[brace + 1 : index]
     raise AssertionError(f"unterminated method: {signature}")
+
+
+def _content_json(content: object) -> dict:
+    if isinstance(content, tuple):
+        _blocks, structured = content
+        if isinstance(structured, dict):
+            return structured
+        content = _blocks
+    parsed = json.loads(content[0].text)  # type: ignore[index,union-attr]
+    if not isinstance(parsed, dict):
+        raise AssertionError("expected dict")
+    return parsed
 
 
 class PlayerTeleportIngressTest(unittest.TestCase):
@@ -71,6 +85,10 @@ class PlayerTeleportEnforceContractTest(unittest.TestCase):
             "SurfaceY(position[0], position[2])",
             "GetCommand_Vehicle()",
             "GetTransport()",
+            "GetParent()",
+            "IsAuthorityOwner()",
+            'result.error = "occupant_client_seated"',
+            "IsInTransport()",
             "SetTransform(mat)",
             "player.SetPosition(position)",
             "applied = veh.GetPosition()",
@@ -98,6 +116,10 @@ class PlayerTeleportEnforceContractTest(unittest.TestCase):
         self.assertLess(transport_read, occupant_read)
         self.assertLess(occupant_read, publish)
         self.assertEqual(body.count("veh.SetTransform(mat)"), 1)
+        self.assertLess(
+            body.index('result.error = "occupant_client_seated"'),
+            set_transform,
+        )
 
 
 class PlayerTeleportAppToolTest(unittest.IsolatedAsyncioTestCase):
@@ -114,7 +136,12 @@ class PlayerTeleportAppToolTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             runtime,
             "call_bridge",
-            new=AsyncMock(return_value={"ok": 1, "pos_real": [7500.0, 10.0, 7500.0]}),
+            new=AsyncMock(
+                side_effect=[
+                    ON_FOOT,
+                    {"ok": 1, "pos_real": [7500.0, 10.0, 7500.0]},
+                ]
+            ),
         ) as call:
             await app.call_tool(
                 COMMAND,
@@ -124,13 +151,19 @@ class PlayerTeleportAppToolTest(unittest.IsolatedAsyncioTestCase):
                     "timeout_s": 1.0,
                 },
             )
-        call.assert_awaited_once_with(
-            COMMAND, {"pos": [7500.0, 0.0, 7500.0]}, "server", 1.0
+        self.assertEqual(
+            [item.args[0] for item in call.await_args_list],
+            ["vehicle_telemetry", COMMAND],
+        )
+        self.assertEqual(
+            call.await_args_list[1].args,
+            (COMMAND, {"pos": [7500.0, 0.0, 7500.0]}, "server", 1.0),
         )
 
     async def test_clear_column_probes_then_teleports(self) -> None:
         app, runtime = await self._build()
         responses = [
+            ON_FOOT,
             {"ok": 1, "y": 10.0, "type": "cp_concrete2"},
             {"ok": 1, "raycast": {"hit": True, "pos": [7500.0, 10.02, 7500.0]}},
             {"ok": 1, "pos_real": [7500.0, 10.0, 7500.0]},
@@ -141,8 +174,9 @@ class PlayerTeleportAppToolTest(unittest.IsolatedAsyncioTestCase):
             await app.call_tool(
                 COMMAND, {"pos": [7500.0, 0.0, 7500.0], "timeout_s": 1.0}
             )
-        self.assertEqual(call.await_count, 3)
-        first, second, third = call.await_args_list
+        self.assertEqual(call.await_count, 4)
+        telemetry, first, second, third = call.await_args_list
+        self.assertEqual(telemetry.args[0], "vehicle_telemetry")
         self.assertEqual(first.args[0], "surface_query")
         self.assertEqual(second.args[0], "scene_raycast")
         self.assertEqual(second.args[1]["from"], [7500.0, 40.0, 7500.0])
@@ -154,6 +188,7 @@ class PlayerTeleportAppToolTest(unittest.IsolatedAsyncioTestCase):
     async def test_covered_column_refuses_without_teleporting(self) -> None:
         app, runtime = await self._build()
         responses = [
+            ON_FOOT,
             {"ok": 1, "y": 10.0},
             {
                 "ok": 1,
@@ -171,11 +206,12 @@ class PlayerTeleportAppToolTest(unittest.IsolatedAsyncioTestCase):
                 COMMAND, {"pos": [7500.0, 0.0, 7500.0], "timeout_s": 1.0}
             )
         awaited = [item.args[0] for item in call.await_args_list]
-        self.assertEqual(awaited, ["surface_query", "scene_raycast"])
+        self.assertEqual(awaited, ["vehicle_telemetry", "surface_query", "scene_raycast"])
 
     async def test_no_ground_hit_refuses_without_teleporting(self) -> None:
         app, runtime = await self._build()
         responses = [
+            ON_FOOT,
             {"ok": 1, "y": 10.0},
             {"ok": 1, "raycast": {"hit": False, "pos": []}},
         ]
@@ -186,11 +222,12 @@ class PlayerTeleportAppToolTest(unittest.IsolatedAsyncioTestCase):
                 COMMAND, {"pos": [7500.0, 0.0, 7500.0], "timeout_s": 1.0}
             )
         awaited = [item.args[0] for item in call.await_args_list]
-        self.assertEqual(awaited, ["surface_query", "scene_raycast"])
+        self.assertEqual(awaited, ["vehicle_telemetry", "surface_query", "scene_raycast"])
 
     async def test_explicit_above_surface_target_skips_the_column_probe(self) -> None:
         app, runtime = await self._build()
         responses = [
+            ON_FOOT,
             {"ok": 1, "y": 10.0},
             {"ok": 1, "pos_real": [7500.0, 50.0, 7500.0]},
         ]
@@ -201,7 +238,75 @@ class PlayerTeleportAppToolTest(unittest.IsolatedAsyncioTestCase):
                 COMMAND, {"pos": [7500.0, 50.0, 7500.0], "timeout_s": 1.0}
             )
         awaited = [item.args[0] for item in call.await_args_list]
-        self.assertEqual(awaited, ["surface_query", COMMAND])
+        self.assertEqual(awaited, ["vehicle_telemetry", "surface_query", COMMAND])
+
+    async def test_client_seated_occupant_is_refused_without_teleporting(self) -> None:
+        app, runtime = await self._build()
+        telemetry = {
+            "ok": 1,
+            "seated": 1,
+            "is_owner": 1,
+            "is_authority_owner": 0,
+        }
+        with patch.object(
+            runtime, "call_bridge", new=AsyncMock(return_value=telemetry)
+        ) as call:
+            result = _content_json(
+                await app.call_tool(
+                    COMMAND,
+                    {
+                        "pos": [7500.0, 0.0, 7500.0],
+                        "skip_clearance_check": True,
+                        "timeout_s": 1.0,
+                    },
+                )
+            )
+        self.assertEqual(result.get("error"), "occupant_client_seated")
+        self.assertEqual([item.args[0] for item in call.await_args_list], ["vehicle_telemetry"])
+
+    async def test_authority_owned_occupant_still_teleports(self) -> None:
+        app, runtime = await self._build()
+        responses = [
+            {"ok": 1, "seated": 1, "is_owner": 0, "is_authority_owner": 1},
+            {"ok": 1, "pos_real": [7500.0, 10.0, 7500.0]},
+        ]
+        with patch.object(
+            runtime, "call_bridge", new=AsyncMock(side_effect=responses)
+        ) as call:
+            await app.call_tool(
+                COMMAND,
+                {
+                    "pos": [7500.0, 0.0, 7500.0],
+                    "skip_clearance_check": True,
+                    "timeout_s": 1.0,
+                },
+            )
+        self.assertEqual(
+            [item.args[0] for item in call.await_args_list],
+            ["vehicle_telemetry", COMMAND],
+        )
+
+
+class OccupantClientSeatedPredicateTest(unittest.TestCase):
+    def test_on_foot_and_unread_are_not_seated(self) -> None:
+        self.assertFalse(server.occupant_client_seated(ON_FOOT))
+        self.assertFalse(server.occupant_client_seated(None))
+        self.assertFalse(server.occupant_client_seated({"ok": 0}))
+
+    def test_client_owned_seat_is_rejected(self) -> None:
+        self.assertTrue(
+            server.occupant_client_seated(
+                {"seated": 1, "is_owner": 1, "is_authority_owner": 0}
+            )
+        )
+        self.assertTrue(server.occupant_client_seated({"seated": True}))
+
+    def test_authority_owned_seat_is_not_rejected(self) -> None:
+        self.assertFalse(
+            server.occupant_client_seated(
+                {"seated": 1, "is_authority_owner": 1}
+            )
+        )
 
 
 if __name__ == "__main__":

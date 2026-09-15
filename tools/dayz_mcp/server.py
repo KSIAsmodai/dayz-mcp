@@ -48,6 +48,7 @@ from dayz_mcp.core import EXPECTED_BRIDGE_VERSION
 from dayz_mcp.effective_schema_core import project_server_config_identity
 from dayz_mcp.tool_registry_fingerprint import capture_registry_snapshot
 from dayz_mcp.knowledge import register_knowledge_tools
+from dayz_mcp.occupant_seat import occupant_client_seated
 from dayz_mcp.server_freshness import (
     REMEDIATION as _TOOL_REGISTRY_REMEDIATION,
     ServerSourceWatch,
@@ -4756,14 +4757,18 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
 
     @app.tool(
         description=(
-            "Requires a lease (session_acquire_wait). Teleport a "
+            f"{LEASE_TOOL_LINE} Teleport a "
             "connected player to pos. y==0 snaps to SurfaceY (vanilla "
             "script-console contract). uid empty (default) targets the first "
             "human; a non-empty uid selects by PlayerIdentity.GetPlainId(). "
             "Surface landings are refused with clearance_blocked when the "
             "target column is covered (a roof, canopy or water plane would "
             "bury the player); skip_clearance_check=true bypasses the probe "
-            "for intentional covered/indoor teleports."
+            "for intentional covered/indoor teleports. Refuses "
+            "occupant_client_seated when the player is a client-owned seated "
+            "occupant (vehicle_get_in_client): teleporting that transport "
+            "desyncs client and server. One car per run — there is no get-out "
+            "after vehicle_get_in_client; tear down with object_delete."
         )
     )
     async def player_teleport(
@@ -4782,6 +4787,20 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         if uid != "":
             args["uid"] = uid
         async with runtime.tool_lock:
+            telemetry = await runtime.call_bridge(
+                "vehicle_telemetry", {}, "client", _timeout(timeout_s)
+            )
+            if occupant_client_seated(telemetry):
+                return {
+                    "ok": False,
+                    "error": "occupant_client_seated",
+                    "hint": (
+                        "player_teleport of a client-owned seated occupant "
+                        "desyncs client and server. One car per run: there is "
+                        "no get-out after vehicle_get_in_client; tear down "
+                        "with object_delete of the fixture."
+                    ),
+                }
             if not skip_clearance_check:
                 refusal = await _surface_clearance(args["pos"], _timeout(timeout_s))
                 if refusal is not None:
@@ -5510,7 +5529,9 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "This is client ownership for engine_set, vehicle_control, and "
             "vehicle_trace; it does not place the player in the server crew. "
             "ActionCondition gates such as ActionSwitchLights still fail "
-            "until vehicle_enter."
+            "until vehicle_enter. One car per run: there is no get-out after "
+            "this seat; player_teleport of the occupant returns "
+            "occupant_client_seated. Tear down with object_delete."
         )
     )
     async def vehicle_get_in_client(pos: list[StrictFloat], timeout_s: StrictFloat = DEFAULT_TOOL_TIMEOUT_S) -> dict[str, Any]:
@@ -5600,7 +5621,9 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "otherwise the bridge returns not_seated. mode=start while a trace "
             "already exists returns trace_exists; call mode=clear before reuse. "
             "mode=dump writes JSONL to $profile:dayz_mcp_trace_<trace_id>.jsonl "
-            "and stop autodumps the same file."
+            "and stop autodumps the same file. Call mode=stop before "
+            "vehicle_release; release Abort autodumps remaining samples then "
+            "clears the trace."
         )
     )
     async def vehicle_trace(
@@ -5637,8 +5660,10 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
 
     @app.tool(
         description=(
-            "Requires a lease (session_acquire_wait). Release sustained "
-            "vehicle control (stop driving)."
+            f"{LEASE_TOOL_LINE} Release sustained vehicle control "
+            "(stop driving). Call vehicle_trace mode=stop before "
+            "vehicle_release: an active trace is autodumped then cleared on "
+            "Abort, so the stop result is what you read."
         )
     )
     async def vehicle_release(timeout_s: StrictFloat = DEFAULT_TOOL_TIMEOUT_S) -> dict[str, Any]:
