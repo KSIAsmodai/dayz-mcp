@@ -601,7 +601,6 @@ _BRIDGE_COMMAND_TOOLS: dict[str, dict[str, str | None]] = {
         "scene_raycast": "scene_raycast",
         "surface_query": "surface_query",
         "telemetry_read": "telemetry_read",
-        "vehicle_drive": None,  # server-side verb with no public tool of its own
         "vehicle_enter": "vehicle_enter",
         "vehicle_prepare_fixture": "vehicle_prepare_fixture",
         "world_spawn": "world_spawn",
@@ -612,7 +611,6 @@ _BRIDGE_COMMAND_TOOLS: dict[str, dict[str, str | None]] = {
         "action_use": "action_use",
         "camera_get": "camera_get",
         "camera_set": "camera_set",
-        "drive_probe_client": None,  # internal probe, never exposed
         "engine_set": "engine_set",
         "key_press": "key_press",
         "player_respawn": "player_respawn",
