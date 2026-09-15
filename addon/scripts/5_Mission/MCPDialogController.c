@@ -127,6 +127,32 @@ class MCPDialogController : ScriptedWidgetEventHandler
 		return m_State == STATE_OPEN;
 	}
 
+	// Same Cancel visibility as ApplySpec: confirm and form show BtnCancel.
+	void TryCancelFromKey(int key, float now)
+	{
+		if (m_State != STATE_OPEN)
+		{
+			return;
+		}
+
+		if (key != KeyCode.KC_ESCAPE)
+		{
+			return;
+		}
+
+		if (!m_BtnCancel)
+		{
+			return;
+		}
+
+		if (m_Kind != "confirm" && m_Kind != "form")
+		{
+			return;
+		}
+
+		TryFinish("cancelled", "", "", now);
+	}
+
 	bool HasHost()
 	{
 		return m_Root != null;

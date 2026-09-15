@@ -7,10 +7,6 @@ class MCPBridge : Managed
 	// Reserve the existing daemon ingress cap (loopback.py MAX_QUEUE) per poll.
 	protected const int MAX_POLL_RESULTS = 64;
 	protected const float JOB_TIMEOUT_S = 5.0;
-	protected const float DRIVE_PROBE_TIMEOUT_S = 12.0;
-	protected const float DRIVE_PROBE_PREP_TIMEOUT_S = 5.0;
-	protected const float DRIVE_PROBE_DEFAULT_SAMPLE_S = 2.0;
-	protected const float DRIVE_PROBE_MAX_SAMPLE_S = 5.0;
 	protected const int VEHICLE_SEARCH_RADIUS = 4;
 	// 8 m covers a truck-length hull around the subject's origin after ECE_TRACE snap.
 	protected const float SPAWN_READY_RADIUS = 8.0;
@@ -21,18 +17,13 @@ class MCPBridge : Managed
 	protected const float TELEMETRY_OBJECT_AT_MAX_RADIUS = 50.0;
 	// F3.4 / F3.6: fixed lookup radius when type+pos resolve an in-world object.
 	protected const float OBJECT_LOOKUP_RADIUS = 25.0;
-	protected const int DRIVE_PROBE_PHASE_PREP = 0;
-	protected const int DRIVE_PROBE_PHASE_IGNITE = 1;
-	protected const int DRIVE_PROBE_PHASE_DRIVE = 2;
-	protected const int DRIVE_PROBE_PHASE_SAMPLE = 3;
-	protected const int DRIVE_PROBE_PHASE_REPORT = 4;
 	// Capability census announced on every poll (caps=). Sorted ascending,
 	// comma separated; one entry per branch of Dispatch() before unknown_command.
 	// The daemon crosses this list against its registered tools; keep it in
 	// lockstep with the dispatcher and never derive it from the daemon side.
 	// Short literals joined by + (the vanilla form for a const string built from
 	// pieces); the longest single literal in the vanilla scripts is about 240 chars.
-	protected const string SERVER_CAPABILITIES = "entities_query,exec_enforce,infected_drive,inventory_attach,inventory_give," + "notify_players,object_anim,object_delete,object_inspect,player_teleport," + "query_all_players,query_get_in_condition,query_player_state,scene_raycast,surface_query," + "telemetry_read,vehicle_drive,vehicle_enter,vehicle_prepare_fixture,world_spawn," + "world_time_set,world_weather_set";
+	protected const string SERVER_CAPABILITIES = "entities_query,exec_enforce,infected_drive,inventory_attach,inventory_give," + "notify_players,object_anim,object_delete,object_inspect,player_teleport," + "query_all_players,query_get_in_condition,query_player_state,scene_raycast,surface_query," + "telemetry_read,vehicle_enter,vehicle_prepare_fixture,world_spawn," + "world_time_set,world_weather_set";
 
 	protected static ref MCPBridge m_Instance;
 
@@ -506,10 +497,6 @@ class MCPBridge : Managed
 		{
 			postNow = DispatchVehicleEnter(command, result);
 		}
-		else if (command.cmd == "vehicle_drive")
-		{
-			postNow = DispatchVehicleDriveProbe(command, result);
-		}
 		else if (command.cmd == "scene_raycast")
 		{
 			postNow = DispatchSceneRaycast(command, result);
@@ -741,77 +728,6 @@ class MCPBridge : Managed
 		m_Jobs.Insert(job.id, job);
 
 		Log("job queued id=" + job.id + " kind=seat deadline_s=" + job.deadline_s);
-		return false;
-	}
-
-	protected bool DispatchVehicleDriveProbe(MCPCommand command, MCPResult result)
-	{
-		float sampleSTarget = DRIVE_PROBE_DEFAULT_SAMPLE_S;
-		float throttle = 1.0;
-		if (command.args)
-		{
-			if (command.args.throttle < 0.0 || command.args.throttle > 1.0)
-			{
-				result.ok = false;
-				result.error = "bad_throttle";
-				return true;
-			}
-
-			if (command.args.throttle > 0.0)
-			{
-				throttle = command.args.throttle;
-			}
-
-			if (command.args.duration < 0.0 || command.args.duration > DRIVE_PROBE_MAX_SAMPLE_S)
-			{
-				result.ok = false;
-				result.error = "bad_duration";
-				return true;
-			}
-
-			if (command.args.duration > 0.0)
-			{
-				sampleSTarget = command.args.duration;
-			}
-
-			command.args.throttle = throttle;
-		}
-
-		Human human = GetFirstHuman();
-		Object subject = null;
-		if (human)
-		{
-			HumanCommandVehicle vehicleCommand = human.GetCommand_Vehicle();
-			if (vehicleCommand)
-			{
-				subject = vehicleCommand.GetTransport();
-			}
-		}
-
-		if (HasActiveJobFor(human, subject))
-		{
-			result.ok = false;
-			result.error = "busy";
-			return true;
-		}
-
-		MCPJob job = new MCPJob();
-		job.id = command.id;
-		job.kind = "drive_probe";
-		job.args = command.args;
-		job.actor = human;
-		job.subject = subject;
-		job.deadline_s = m_ElapsedS + DRIVE_PROBE_TIMEOUT_S;
-		job.prep_deadline_s = m_ElapsedS + DRIVE_PROBE_PREP_TIMEOUT_S;
-		job.phase = DRIVE_PROBE_PHASE_PREP;
-		job.sample_s_target = sampleSTarget;
-		job.net_strategy = -1;
-		job.tick_poll_sent = result.tick_poll_sent;
-		job.tick_poll_callback = result.tick_poll_callback;
-		job.tick_dispatch = result.tick_dispatch;
-		m_Jobs.Insert(job.id, job);
-
-		Log("job queued id=" + job.id + " kind=drive_probe deadline_s=" + job.deadline_s);
 		return false;
 	}
 
@@ -3082,20 +2998,6 @@ class MCPBridge : Managed
 					job.subject = null;
 					m_Jobs.Remove(jobId);
 				}
-				else if (job.kind == "drive_probe" && ProcessDriveProbe(job))
-				{
-					if (job.error != "")
-					{
-						PostJobFailure(job);
-					}
-					else
-					{
-						PostJobSuccess(job);
-					}
-					job.actor = null;
-					job.subject = null;
-					m_Jobs.Remove(jobId);
-				}
 				else if (m_ElapsedS > job.deadline_s)
 				{
 					PostJobTimeout(job);
@@ -3226,246 +3128,11 @@ class MCPBridge : Managed
 		return true;
 	}
 
-	protected bool ProcessDriveProbe(MCPJob job)
-	{
-		if (job.phase == DRIVE_PROBE_PHASE_PREP)
-		{
-			return ProcessDriveProbePrep(job);
-		}
-		else if (job.phase == DRIVE_PROBE_PHASE_IGNITE)
-		{
-			return ProcessDriveProbeIgnite(job);
-		}
-		else if (job.phase == DRIVE_PROBE_PHASE_DRIVE)
-		{
-			return ProcessDriveProbeDrive(job);
-		}
-		else if (job.phase == DRIVE_PROBE_PHASE_SAMPLE)
-		{
-			return ProcessDriveProbeSample(job);
-		}
-		else if (job.phase == DRIVE_PROBE_PHASE_REPORT)
-		{
-			return true;
-		}
-
-		job.error = "bad_probe_phase";
-		return true;
-	}
-
-	protected bool ProcessDriveProbePrep(MCPJob job)
-	{
-		Human human = job.actor;
-		if (!human)
-		{
-			human = GetFirstHuman();
-			job.actor = human;
-		}
-
-		if (!human)
-		{
-			job.error = "not_seated";
-			return true;
-		}
-
-		HumanCommandVehicle vehicleCommand = human.GetCommand_Vehicle();
-		if (!vehicleCommand)
-		{
-			job.error = "not_seated";
-			return true;
-		}
-
-		CarScript car = CarScript.Cast(vehicleCommand.GetTransport());
-		if (!car)
-		{
-			job.error = "no_vehicle";
-			return true;
-		}
-
-		job.subject = car;
-
-		if (!job.fixture_attempted)
-		{
-			if (!IsVehicleFixtureReady(car))
-			{
-				car.OnDebugSpawn();
-			}
-
-			job.fixture_attempted = true;
-		}
-
-		if (IsVehicleFixtureReady(car))
-		{
-			job.vehicle_fixture_ready = true;
-			job.phase = DRIVE_PROBE_PHASE_IGNITE;
-			return false;
-		}
-
-		if (m_ElapsedS > job.prep_deadline_s)
-		{
-			job.vehicle_fixture_ready = false;
-			job.phase = DRIVE_PROBE_PHASE_REPORT;
-			return true;
-		}
-
-		return false;
-	}
-
-	protected bool ProcessDriveProbeIgnite(MCPJob job)
-	{
-		CarScript car = CarScript.Cast(job.subject);
-		if (!car)
-		{
-			job.error = "no_vehicle";
-			return true;
-		}
-
-		car.EngineStart();
-		job.engine_on_server = car.EngineIsOn();
-		job.phase = DRIVE_PROBE_PHASE_DRIVE;
-		return false;
-	}
-
-	protected bool ProcessDriveProbeDrive(MCPJob job)
-	{
-		CarScript car = CarScript.Cast(job.subject);
-		if (!car)
-		{
-			job.error = "no_vehicle";
-			return true;
-		}
-
-		float throttle = GetDriveProbeThrottle(job);
-
-		car.SetHandbrake(0);
-		car.SetBrake(0);
-		if (car.GetGear() < CarGear.FIRST)
-		{
-			car.ShiftTo(CarGear.FIRST);
-		}
-		car.SetThrottle(throttle);
-
-		job.start_pos = car.GetPosition();
-		job.sample_start_s = m_ElapsedS;
-		job.speedo_max = 0.0;
-		job.pos_delta = 0.0;
-		job.net_strategy = EncodeNetworkMoveStrategy(car.GetNetworkMoveStrategy());
-		CaptureDriveProbeOwnership(job, car);
-		job.phase = DRIVE_PROBE_PHASE_SAMPLE;
-		return false;
-	}
-
-	protected bool ProcessDriveProbeSample(MCPJob job)
-	{
-		CarScript car = CarScript.Cast(job.subject);
-		if (!car)
-		{
-			job.error = "no_vehicle";
-			return true;
-		}
-
-		float throttle = GetDriveProbeThrottle(job);
-		car.SetThrottle(throttle);
-		car.SetHandbrake(0);
-		car.SetBrake(0);
-		if (car.GetGear() < CarGear.FIRST)
-		{
-			car.ShiftTo(CarGear.FIRST);
-		}
-
-		if (car.EngineIsOn())
-		{
-			job.engine_on_server = true;
-		}
-
-		float speed = car.GetSpeedometer();
-		if (speed > job.speedo_max)
-		{
-			job.speedo_max = speed;
-		}
-
-		vector delta = car.GetPosition() - job.start_pos;
-		job.pos_delta = delta.Length();
-		job.net_strategy = EncodeNetworkMoveStrategy(car.GetNetworkMoveStrategy());
-		CaptureDriveProbeOwnership(job, car);
-
-		if (m_ElapsedS - job.sample_start_s >= job.sample_s_target)
-		{
-			job.phase = DRIVE_PROBE_PHASE_REPORT;
-			return true;
-		}
-
-		return false;
-	}
-
-	protected void CaptureDriveProbeOwnership(MCPJob job, CarScript car)
-	{
-		if (!job || !car)
-		{
-			return;
-		}
-
-		job.is_owner = car.IsOwner();
-		job.is_authority_owner = car.IsAuthorityOwner();
-
-		PlayerIdentity ownerIdentity = car.GetOwnerIdentity();
-		if (ownerIdentity)
-		{
-			job.owner_identity = ownerIdentity.GetPlainId();
-		}
-		else
-		{
-			job.owner_identity = "";
-		}
-
-		int lowBits = 0;
-		int highBits = 0;
-		car.GetNetworkID(lowBits, highBits);
-		job.net_id_low = lowBits;
-		job.net_id_high = highBits;
-	}
-
-	protected float GetDriveProbeThrottle(MCPJob job)
-	{
-		if (job && job.args && job.args.throttle > 0.0)
-		{
-			return job.args.throttle;
-		}
-
-		return 1.0;
-	}
-
-	protected int EncodeNetworkMoveStrategy(NetworkMoveStrategy strategy)
-	{
-		if (strategy == NetworkMoveStrategy.NONE)
-		{
-			return 0;
-		}
-
-		if (strategy == NetworkMoveStrategy.LATEST)
-		{
-			return 1;
-		}
-
-		if (strategy == NetworkMoveStrategy.PHYSICS)
-		{
-			return 2;
-		}
-
-		return -1;
-	}
-
 	protected void PostJobSuccess(MCPJob job)
 	{
 		if (job.kind == "seat")
 		{
 			PostSeatSuccess(job);
-			return;
-		}
-
-		if (job.kind == "drive_probe")
-		{
-			PostDriveProbeResult(job);
 			return;
 		}
 
@@ -3500,53 +3167,8 @@ class MCPBridge : Managed
 		PostResult(result);
 	}
 
-	protected void PostDriveProbeResult(MCPJob job)
-	{
-		// MCP-PROBE B3 server-side -- DECISION DATA, no es la tool final
-		MCPResult result = new MCPResult();
-		result.id = job.id;
-		result.ok = true;
-		result.vehicle_fixture_ready = job.vehicle_fixture_ready;
-		result.engine_on_server = job.engine_on_server;
-		result.speedo_max = job.speedo_max;
-		result.pos_delta = job.pos_delta;
-		result.net_strategy = job.net_strategy;
-		result.is_owner = job.is_owner;
-		result.is_authority_owner = job.is_authority_owner;
-		result.owner_identity = job.owner_identity;
-		result.net_id_low = job.net_id_low;
-		result.net_id_high = job.net_id_high;
-		result.tick_poll_sent = job.tick_poll_sent;
-		result.tick_poll_callback = job.tick_poll_callback;
-		result.tick_dispatch = job.tick_dispatch;
-		PostResult(result);
-	}
-
-	protected void NeutralizeDriveProbeControls(MCPJob job)
-	{
-		if (!job)
-		{
-			return;
-		}
-
-		CarScript car = CarScript.Cast(job.subject);
-		if (!car)
-		{
-			return;
-		}
-
-		car.SetThrottle(0);
-		car.SetBrake(0);
-		car.SetHandbrake(0);
-	}
-
 	protected void PostJobFailure(MCPJob job)
 	{
-		if (job.kind == "drive_probe")
-		{
-			NeutralizeDriveProbeControls(job);
-		}
-
 		MCPResult result = new MCPResult();
 		result.id = job.id;
 		result.ok = false;
@@ -3559,11 +3181,6 @@ class MCPBridge : Managed
 
 	protected void PostJobTimeout(MCPJob job)
 	{
-		if (job.kind == "drive_probe")
-		{
-			NeutralizeDriveProbeControls(job);
-		}
-
 		MCPResult result = new MCPResult();
 		result.id = job.id;
 		result.ok = false;
