@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import ntpath
 import os
 import re
@@ -82,6 +83,8 @@ class _Runtime(Protocol):
     async def lifecycle_status(self) -> dict[str, object]: ...
     async def reconcile_idle_session(self) -> dict[str, object]: ...
     async def bridge_status_payload(self) -> dict[str, object]: ...
+    async def lifecycle_close(self, run_id: str) -> dict[str, object]: ...
+    async def lifecycle_reap(self, run_id: str) -> dict[str, object]: ...
 
 
 _ProgressCallback = Callable[[str, str | None], Awaitable[None]]
@@ -1907,3 +1910,520 @@ async def execute_dayz_test_stop(
                 result.setdefault("stop_method", "forced_kill")
                 result["exit_metrics_valid"] = False
             return result
+
+
+_TERMINATION_LINE = "--- Termination successfully completed ---"
+_CLOSE_TOOL_KEYS = (
+    "run_id",
+    "graceful",
+    "stop_method",
+    "graceful_wait_s",
+    "exit_metrics_valid",
+    "run_retired",
+    "stop_required",
+    "reason",
+    "roles",
+)
+_CLOSE_ROLE_KEYS = ("role", "termination_line", "rpt_rotated")
+_CLOSE_REASON_TOKENS = frozenset(
+    {
+        "timeout",
+        "process_alive",
+        "rpt_rotated",
+        "role_without_rpt",
+        "no_window",
+        "run_retired_elsewhere",
+        "status_unavailable",
+    }
+)
+_CLOSE_POLL_S = 0.05
+_CLOSE_REAP_INTERVAL_S = 1.0
+_RPT_READ_CHUNK = 1024 * 1024
+_RPT_READ_POLL_CAP = 8 * 1024 * 1024
+_TERMINATION_LINE_BYTES = _TERMINATION_LINE.encode("ascii")
+_RPT_OVERLAP = max(0, len(_TERMINATION_LINE_BYTES) - 1)
+_ROLE_CLOSE_ORDER = {"client": 0, "server": 1}
+
+
+@dataclass(frozen=True, slots=True)
+class _RptWatch:
+    role: str
+    path: str
+    file_id: int
+    offset: int
+    overlap: bytes
+
+
+def _held_lease_token(runtime: _Runtime) -> str | None:
+    token = getattr(runtime, "active_lease_token", None)
+    if isinstance(token, str) and token:
+        return token
+    return None
+
+
+def _parse_graceful_timeout_s(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _fail("bad_args")
+    timeout = float(value)
+    if not math.isfinite(timeout) or timeout <= 0.0 or timeout > 120.0:
+        _fail("bad_args")
+    return timeout
+
+
+def _launched_roles(run: dict[str, object]) -> list[str]:
+    processes = run.get("processes")
+    roles: list[str] = []
+    seen: set[str] = set()
+    if isinstance(processes, list):
+        for item in processes:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            if isinstance(role, str) and role and role not in seen:
+                seen.add(role)
+                roles.append(role)
+    roles.sort(key=lambda role: (_ROLE_CLOSE_ORDER.get(role, 2), role))
+    return roles
+
+
+def _start_role_roots() -> dict[str, str] | None:
+    """Role to artifact root from every mode start step. Not a literal table."""
+    try:
+        records = _mode_records()
+    except DayzTestToolError:
+        return None
+    mapping: dict[str, str] = {}
+    for record in records:
+        for step in record.steps:
+            if step.kind != "start":
+                continue
+            role = step.role
+            root = step.root
+            if not isinstance(role, str) or not role:
+                continue
+            if not isinstance(root, str) or not root:
+                continue
+            mapping[role] = root
+    return mapping
+
+
+def _close_project_policy(
+    run: dict[str, object],
+) -> dayz_test_request.RequestProjectPolicy | None:
+    """The sealed project policy, loaded the way stop does before artifacts."""
+    try:
+        with open_approved_launcher("dayz-test-v1") as opened:
+            opened.validate_native_pe()
+            with secure_launcher.load_verified_bundle(opened) as bundle:
+                policies = _semantic_policies(bundle.sealed_policies)
+    except Exception:
+        return None
+    matches = [item for item in policies if run.get("mod") == "@" + item.mod]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _artifact_candidates(
+    policy: dayz_test_request.RequestProjectPolicy,
+) -> list[str] | None:
+    try:
+        return _artifact_paths(policy, "all")
+    except DayzTestToolError:
+        return None
+
+
+def _profiles_match_policy(
+    policy: dayz_test_request.RequestProjectPolicy, run: dict[str, object]
+) -> bool:
+    profiles = run.get("profiles")
+    if not isinstance(profiles, str) or not profiles:
+        return False
+    candidates = _artifact_candidates(policy)
+    if candidates is None:
+        return False
+    normalized = ntpath.normcase(ntpath.normpath(profiles))
+    matches = [
+        candidate
+        for candidate in candidates
+        if ntpath.normcase(ntpath.normpath(candidate)) == normalized
+    ]
+    return len(matches) == 1
+
+
+def _close_role_folder(
+    policy: dayz_test_request.RequestProjectPolicy,
+    role: str,
+    start_roots: dict[str, str],
+) -> str | None:
+    root = start_roots.get(role)
+    if not isinstance(root, str) or not root:
+        return None
+    candidates = _artifact_candidates(policy)
+    if candidates is None:
+        return None
+    folder = ntpath.join(policy.dev_root, root, "profiles")
+    folder_norm = ntpath.normcase(ntpath.normpath(folder))
+    if not any(
+        ntpath.normcase(ntpath.normpath(candidate)) == folder_norm
+        for candidate in candidates
+    ):
+        return None
+    return folder
+
+
+def _list_rpt_files(profiles_dir: Path) -> list[Path] | None:
+    try:
+        return [
+            item
+            for item in profiles_dir.iterdir()
+            if item.is_file() and item.suffix.casefold() == ".rpt"
+        ]
+    except OSError:
+        return None
+
+
+def _newest_rpt(profiles_dir: Path) -> Path | None:
+    files = _list_rpt_files(profiles_dir)
+    if not files:
+        return None
+
+    def _mtime(item: Path) -> float:
+        try:
+            return item.stat().st_mtime
+        except OSError:
+            return -1.0
+
+    return max(files, key=_mtime)
+
+
+def _rpt_watch(role: str, path: Path) -> _RptWatch | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return _RptWatch(
+        role=role,
+        path=str(path),
+        file_id=int(stat.st_ino),
+        offset=int(stat.st_size),
+        overlap=b"",
+    )
+
+
+def _poll_rpt(watch: _RptWatch, path: Path) -> tuple[str, _RptWatch]:
+    """Return (termination|rotated|transient|none, updated watch)."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return "transient", watch
+    file_id = int(stat.st_ino)
+    size = int(stat.st_size)
+    if str(path) != watch.path or file_id != watch.file_id or size < watch.offset:
+        return "rotated", watch
+    if size == watch.offset:
+        return "none", watch
+    found = False
+    overlap = watch.overlap
+    offset = watch.offset
+    remaining = _RPT_READ_POLL_CAP
+    try:
+        with path.open("rb") as handle:
+            while offset < size and remaining > 0:
+                chunk_n = min(_RPT_READ_CHUNK, remaining, size - offset)
+                handle.seek(offset)
+                added = handle.read(chunk_n)
+                if not added:
+                    break
+                remaining -= len(added)
+                window = overlap + added
+                if _TERMINATION_LINE_BYTES in window:
+                    found = True
+                overlap = window[-_RPT_OVERLAP:] if _RPT_OVERLAP else b""
+                offset += len(added)
+                if found:
+                    break
+    except OSError:
+        return "transient", watch
+    updated = replace(watch, offset=offset, overlap=overlap)
+    return ("termination" if found else "none"), updated
+
+
+def _close_role_row(
+    close_result: dict[str, object], role: str
+) -> dict[str, object] | None:
+    raw = close_result.get(role)
+    if isinstance(raw, dict):
+        return raw
+    roles = close_result.get("roles")
+    if isinstance(roles, list):
+        for item in roles:
+            if isinstance(item, dict) and item.get("role") == role:
+                return item
+    return None
+
+
+def _windows_posted(close_result: dict[str, object], role: str) -> int:
+    row = _close_role_row(close_result, role)
+    if row is None:
+        return 0
+    value = row.get("windows_posted")
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _retired_event(status: object, run_id: str) -> str | None:
+    hits = _retired_for(status, run_id)
+    if not hits:
+        return None
+    events = [
+        item.get("event")
+        for item in hits
+        if isinstance(item.get("event"), str) and item.get("event")
+    ]
+    if "run_reaped" in events:
+        return "run_reaped"
+    if events:
+        return str(events[0])
+    return None
+
+
+def _whitelist_close_result(payload: dict[str, object]) -> dict[str, object]:
+    roles_raw = payload.get("roles")
+    roles: list[dict[str, object]] = []
+    if isinstance(roles_raw, list):
+        for item in roles_raw:
+            if not isinstance(item, dict):
+                continue
+            roles.append({key: item.get(key) for key in _CLOSE_ROLE_KEYS})
+    result = {key: payload.get(key) for key in _CLOSE_TOOL_KEYS}
+    result["roles"] = roles
+    result["stop_method"] = "orderly_close"
+    return result
+
+
+async def execute_dayz_test_close(
+    runtime: _Runtime,
+    run_id: str,
+    *,
+    graceful_timeout_s: object = 45,
+    progress_cb: _ProgressCallback | None = None,
+) -> dict[str, object]:
+    timeout_s = _parse_graceful_timeout_s(graceful_timeout_s)
+    if _held_lease_token(runtime) is None:
+        _fail("lease_required")
+    if progress_cb is not None:
+        await progress_cb("validating", None)
+    status_fn = getattr(runtime, "lifecycle_status", None)
+    if not callable(status_fn):
+        _fail("lifecycle_status_invalid")
+    status_snapshot = await status_fn()
+    run = _run_row(status_snapshot, run_id)
+    if run is None:
+        _fail("run_not_found")
+    process_roles = _launched_roles(run)
+    start_roots = _start_role_roots()
+    policy = _close_project_policy(run)
+    published = [
+        role
+        for role in process_roles
+        if start_roots is not None and role in start_roots
+    ]
+    watches: dict[str, _RptWatch] = {}
+    missing_rpt: list[str] = []
+    if (
+        policy is None
+        or start_roots is None
+        or not _profiles_match_policy(policy, run)
+    ):
+        missing_rpt.extend(process_roles)
+    else:
+        for role in process_roles:
+            if role not in start_roots:
+                missing_rpt.append(role)
+                continue
+            folder = _close_role_folder(policy, role, start_roots)
+            if folder is None:
+                missing_rpt.append(role)
+                continue
+            listed = _list_rpt_files(Path(folder))
+            newest = None if listed is None else _newest_rpt(Path(folder))
+            if newest is None:
+                missing_rpt.append(role)
+                continue
+            watch = _rpt_watch(role, newest)
+            if watch is None:
+                missing_rpt.append(role)
+                continue
+            watches[role] = watch
+    close_fn = getattr(runtime, "lifecycle_close", None)
+    if not callable(close_fn):
+        _fail("lifecycle_close_unavailable")
+    close_result = await close_fn(run_id)
+    if not isinstance(close_result, dict):
+        _fail("lifecycle_close_unavailable")
+    if close_result.get("error"):
+        code = close_result.get("error")
+        _fail(str(code) if isinstance(code, str) and code else "lifecycle_close_unavailable")
+    wait_started = time.monotonic()
+    deadline = wait_started + timeout_s
+    reap_fn = getattr(runtime, "lifecycle_reap", None)
+    retired_event: str | None = None
+    status_unavailable = False
+    last_reap_at: float | None = None
+    role_state: dict[str, dict[str, bool]] = {
+        role: {"termination_line": False, "rpt_rotated": False}
+        for role in published
+    }
+    for role in missing_rpt:
+        if start_roots is not None and role in start_roots:
+            role_state.setdefault(
+                role, {"termination_line": False, "rpt_rotated": False}
+            )
+
+    no_window = False
+    for role in published:
+        if _close_role_row(close_result, role) is None:
+            continue
+        if _windows_posted(close_result, role) == 0:
+            no_window = True
+            break
+
+    def _past_deadline() -> bool:
+        return time.monotonic() >= deadline
+
+    def _read_rpts() -> None:
+        for role, watch in list(watches.items()):
+            state = role_state.setdefault(
+                role, {"termination_line": False, "rpt_rotated": False}
+            )
+            if state["termination_line"] or state["rpt_rotated"]:
+                continue
+            profiles_dir = Path(watch.path).parent
+            listed = _list_rpt_files(profiles_dir)
+            if listed is None:
+                continue
+            newest = _newest_rpt(profiles_dir) if listed else None
+            target = newest if newest is not None else Path(watch.path)
+            outcome, updated = _poll_rpt(watch, target)
+            watches[role] = updated
+            if outcome == "termination":
+                state["termination_line"] = True
+            elif outcome == "rotated":
+                state["rpt_rotated"] = True
+
+    async def _observe() -> None:
+        nonlocal retired_event, status_unavailable, last_reap_at
+        if _past_deadline():
+            return
+        try:
+            current = await status_fn()
+        except Exception:
+            status_unavailable = True
+            return
+        event = _retired_event(current, run_id)
+        if event is not None:
+            retired_event = event
+        _read_rpts()
+        if retired_event == "run_reaped":
+            _read_rpts()
+            return
+        if retired_event is not None:
+            return
+        if not callable(reap_fn) or _past_deadline():
+            return
+        now = time.monotonic()
+        if last_reap_at is not None and (now - last_reap_at) < _CLOSE_REAP_INTERVAL_S:
+            return
+        try:
+            await reap_fn(run_id)
+        except Exception:
+            pass
+        last_reap_at = time.monotonic()
+        if _past_deadline():
+            return
+        try:
+            after = await status_fn()
+        except Exception:
+            status_unavailable = True
+            return
+        event = _retired_event(after, run_id)
+        if event is not None:
+            retired_event = event
+        if retired_event == "run_reaped":
+            _read_rpts()
+
+    if not no_window:
+        await _observe()
+        while (
+            not status_unavailable
+            and retired_event is None
+            and time.monotonic() < deadline
+        ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            await asyncio.sleep(min(_CLOSE_POLL_S, remaining))
+            await _observe()
+
+    graceful_wait_s = max(0.0, time.monotonic() - wait_started)
+    run_reaped = retired_event == "run_reaped"
+    run_retired_elsewhere = (
+        retired_event is not None and retired_event != "run_reaped"
+    )
+    run_retired = retired_event is not None
+    all_new_lines = bool(published) and all(
+        role_state.get(role, {}).get("termination_line") for role in published
+    )
+    any_rotated = any(
+        role_state.get(role, {}).get("rpt_rotated") for role in published
+    )
+    any_missing = bool(missing_rpt)
+    graceful = bool(
+        published
+        and all_new_lines
+        and run_reaped
+        and not any_missing
+        and not any_rotated
+        and not status_unavailable
+    )
+    reason: str | None = None
+    if not graceful:
+        if status_unavailable:
+            reason = "status_unavailable"
+        elif run_retired_elsewhere:
+            reason = "run_retired_elsewhere"
+        elif any_missing:
+            reason = "role_without_rpt"
+        elif any_rotated:
+            reason = "rpt_rotated"
+        elif no_window:
+            reason = "no_window"
+        elif all_new_lines and not run_reaped:
+            reason = "process_alive"
+        else:
+            reason = "timeout"
+    if reason is not None and reason not in _CLOSE_REASON_TOKENS:
+        reason = "timeout"
+    roles_out = [
+        {
+            "role": role,
+            "termination_line": bool(
+                role_state.get(role, {}).get("termination_line")
+            ),
+            "rpt_rotated": bool(role_state.get(role, {}).get("rpt_rotated")),
+        }
+        for role in published
+    ]
+    payload: dict[str, object] = {
+        "run_id": run_id,
+        "graceful": graceful,
+        "stop_method": "orderly_close",
+        "graceful_wait_s": graceful_wait_s,
+        "exit_metrics_valid": graceful,
+        "run_retired": run_retired,
+        "stop_required": (not run_retired) or status_unavailable,
+        "reason": reason,
+        "roles": roles_out,
+    }
+    return _whitelist_close_result(payload)
+
