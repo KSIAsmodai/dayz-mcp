@@ -1066,6 +1066,13 @@ def _measure_replacement(
     return terminated, any(pid not in before for pid in after)
 
 
+_STEAM_PREP_TOKEN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _steam_prep_token(value: object) -> str | None:
+    return value if type(value) is str and _STEAM_PREP_TOKEN.fullmatch(value) else None
+
+
 def _compact_result(
     *,
     terminal: WorkerTerminal,
@@ -1088,8 +1095,13 @@ def _compact_result(
     vpp_missing: list[str] | None = None,
     vpp_warnings: list[str] | None = None,
     steam_startup: object = None,
+    steam_pid_repair: object = None,
+    steam_restarted: object = None,
 ) -> dict[str, object]:
     projection = readiness or _NULL_READINESS
+    startup = _steam_prep_token(steam_startup)
+    repair = _steam_prep_token(steam_pid_repair)
+    restarted = steam_restarted if type(steam_restarted) is bool else None
     return {
         "status": "succeeded" if terminal.ok else "failed",
         "project": project,
@@ -1129,11 +1141,15 @@ def _compact_result(
         "vpp_missing": vpp_missing,
         "vpp_warnings": vpp_warnings,
         # ficha 47c4: name the Steam-bootstrap death, never repair Steam here.
-        "steam_startup": steam_startup if type(steam_startup) is str else None,
+        # Always present, null included. Tokens fullmatch [a-z][a-z0-9_]{0,63};
+        # restarted is a strict bool. Anything else, including identity, is null.
+        "steam_startup": startup,
+        "steam_pid_repair": repair,
+        "steam_restarted": restarted,
         "client_death_diagnosis": diagnose_client_steam_bootstrap(
             error_code=terminal.error_code,
             client_alive=client_alive,
-            steam_startup=steam_startup,
+            steam_startup=startup,
         ),
     }
 
@@ -1310,7 +1326,9 @@ async def _execute_request(
                 error_code="client_dead_after_ack",
                 exit_code=1,
             )
-    steam_startup = _steam_startup_from_status(status)
+    steam_startup, steam_pid_repair, steam_restarted = _steam_fields_from_status(
+        status, terminal.run_id
+    )
     return _compact_result(
         terminal=terminal,
         project=policy.mod,
@@ -1332,17 +1350,25 @@ async def _execute_request(
         vpp_missing=None if vpp is None else list(vpp.missing),
         vpp_warnings=None if vpp is None else list(vpp.warnings),
         steam_startup=steam_startup,
+        steam_pid_repair=steam_pid_repair,
+        steam_restarted=steam_restarted,
     )
 
 
-def _steam_startup_from_status(status: object) -> str | None:
+def _steam_fields_from_status(
+    status: object, run_id: object
+) -> tuple[str | None, str | None, bool | None]:
     if not isinstance(status, dict):
-        return None
+        return None, None, None
     prep = status.get("steam_preparation")
-    if isinstance(prep, dict) and type(prep.get("startup")) is str:
-        return prep["startup"]
-    value = status.get("steam_startup")
-    return value if type(value) is str else None
+    if not isinstance(prep, dict) or prep.get("run_id") != run_id:
+        return None, None, None
+    restarted = prep.get("restarted")
+    return (
+        _steam_prep_token(prep.get("startup")),
+        _steam_prep_token(prep.get("pid_repair")),
+        restarted if type(restarted) is bool else None,
+    )
 
 
 async def execute_dayz_test_run(
