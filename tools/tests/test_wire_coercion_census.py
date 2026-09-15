@@ -676,6 +676,8 @@ class WireCoercionTests(unittest.IsolatedAsyncioTestCase):
                         "object_type": "Roof",
                     },
                 }
+            if cmd == "vehicle_telemetry":
+                return {"ok": 1, "seated": 0, "is_authority_owner": 0}
             if cmd == "player_teleport":
                 return {"ok": 1}
             raise AssertionError(cmd)
@@ -685,7 +687,7 @@ class WireCoercionTests(unittest.IsolatedAsyncioTestCase):
                 "player_teleport",
                 {"pos": [1.0, 0.0, 3.0], "skip_clearance_check": 1},
             )
-        self.assertEqual(calls, ["player_teleport"])
+        self.assertEqual(calls, ["vehicle_telemetry", "player_teleport"])
 
         calls.clear()
         with patch.object(self.runtime, "call_bridge", spy):
@@ -693,7 +695,7 @@ class WireCoercionTests(unittest.IsolatedAsyncioTestCase):
                 "player_teleport",
                 {"pos": [1.0, 0.0, 3.0], "skip_clearance_check": False},
             )
-        self.assertEqual(calls, ["surface_query", "scene_raycast"])
+        self.assertEqual(calls, ["vehicle_telemetry", "surface_query", "scene_raycast"])
 
     async def test_numeric_family_rejects_bool_and_strings_on_wire(self) -> None:
         cases = (

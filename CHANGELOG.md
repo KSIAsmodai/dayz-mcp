@@ -34,6 +34,7 @@ Merged to `main` after [v1.2](https://github.com/willy92wins/dayz-mcp/releases/t
 - `pack-addon.ps1` passes `-packonly` when the source has no `.p3d`/`.paa`/`.rvmat`, matching the test worker so AddonBuilder does not binarize against every `config.cpp` under `P:\` (fb-20260915-005408-bcd8).
 - `capture_screenshot` launches the grab without an inherited `PSModulePath`, so a Git Bash-poisoned module path cannot hide PowerShell cmdlets (fb-20260915-011312-ba70).
 - `vehicle_release` Abort autodumps a live trace before clearing it; stop the trace in a separate call, then release (fb-20260915-014739-7ad1).
+- `player_teleport` refuses `occupant_client_seated` for a client-owned seated occupant so the server replica does not desync; one car per run, no get-out after `vehicle_get_in_client` (fb-20260915-014733-81f3).
 
 ### Security
 

@@ -124,6 +124,21 @@ class PreconditionDocsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Dump(s_TraceId)", abort)
         self.assertLess(abort.index("Dump("), abort.index("ClearState("))
 
+    def test_player_teleport_names_occupant_client_seated_and_one_car_limit(self) -> None:
+        description = _tool_description(self.app, "player_teleport")
+        self.assertTrue(description.startswith(LEASE_TOOL_LINE), description)
+        self.assertIn("occupant_client_seated", description)
+        self.assertIn("One car per run", description)
+        self.assertIn("no get-out", description)
+        body = _method_body(
+            SERVER_BRIDGE.read_text(encoding="utf-8"),
+            "protected bool DispatchPlayerTeleport(",
+        )
+        self.assertIn('result.error = "occupant_client_seated"', body)
+        get_in = _tool_description(self.app, "vehicle_get_in_client")
+        self.assertIn("occupant_client_seated", get_in)
+        self.assertIn("One car per run", get_in)
+
     def test_world_spawn_does_not_claim_fixture_prep(self) -> None:
         description = _tool_description(self.app, "world_spawn")
         _assert_world_spawn_copy(self, description)

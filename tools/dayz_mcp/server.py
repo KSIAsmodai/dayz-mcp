@@ -131,6 +131,28 @@ _RETAIL_QUARANTINE_REASONS = frozenset({
 })
 LEASE_TOOL_LINE = "Requires a lease (session_acquire_wait)."
 
+
+def _wire_bool(value: object) -> bool | None:
+    if value is True or value == 1:
+        return True
+    if value is False or value == 0:
+        return False
+    return None
+
+
+def occupant_client_seated(telemetry: object) -> bool:
+    """True when the client owns a seated occupant (vehicle_get_in_client).
+
+    Server SetTransform of that transport desyncs the owning client
+    (fb-20260915-014733-81f3). Authority-owned seating still moves the
+    transport; an unreadable telemetry payload is not treated as seated.
+    """
+    if not isinstance(telemetry, dict):
+        return False
+    if _wire_bool(telemetry.get("seated")) is not True:
+        return False
+    return _wire_bool(telemetry.get("is_authority_owner")) is not True
+
 # Vanilla ECE_* from centraleconomy.c. world_spawn flags=0 is the documented
 # surface default (bridge applies ECE_PLACE_ON_SURFACE). Non-zero values must
 # match MCPBridge.IsAllowedSpawnFlags; ECE_KEEPHEIGHT / ECE_NOLIFETIME are
@@ -4756,14 +4778,18 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
 
     @app.tool(
         description=(
-            "Requires a lease (session_acquire_wait). Teleport a "
+            f"{LEASE_TOOL_LINE} Teleport a "
             "connected player to pos. y==0 snaps to SurfaceY (vanilla "
             "script-console contract). uid empty (default) targets the first "
             "human; a non-empty uid selects by PlayerIdentity.GetPlainId(). "
             "Surface landings are refused with clearance_blocked when the "
             "target column is covered (a roof, canopy or water plane would "
             "bury the player); skip_clearance_check=true bypasses the probe "
-            "for intentional covered/indoor teleports."
+            "for intentional covered/indoor teleports. Refuses "
+            "occupant_client_seated when the player is a client-owned seated "
+            "occupant (vehicle_get_in_client): teleporting that transport "
+            "desyncs client and server. One car per run — there is no get-out "
+            "after vehicle_get_in_client; tear down with object_delete."
         )
     )
     async def player_teleport(
@@ -4782,6 +4808,20 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         if uid != "":
             args["uid"] = uid
         async with runtime.tool_lock:
+            telemetry = await runtime.call_bridge(
+                "vehicle_telemetry", {}, "client", _timeout(timeout_s)
+            )
+            if occupant_client_seated(telemetry):
+                return {
+                    "ok": False,
+                    "error": "occupant_client_seated",
+                    "hint": (
+                        "player_teleport of a client-owned seated occupant "
+                        "desyncs client and server. One car per run: there is "
+                        "no get-out after vehicle_get_in_client; tear down "
+                        "with object_delete of the fixture."
+                    ),
+                }
             if not skip_clearance_check:
                 refusal = await _surface_clearance(args["pos"], _timeout(timeout_s))
                 if refusal is not None:
@@ -5510,7 +5550,9 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "This is client ownership for engine_set, vehicle_control, and "
             "vehicle_trace; it does not place the player in the server crew. "
             "ActionCondition gates such as ActionSwitchLights still fail "
-            "until vehicle_enter."
+            "until vehicle_enter. One car per run: there is no get-out after "
+            "this seat; player_teleport of the occupant returns "
+            "occupant_client_seated. Tear down with object_delete."
         )
     )
     async def vehicle_get_in_client(pos: list[StrictFloat], timeout_s: StrictFloat = DEFAULT_TOOL_TIMEOUT_S) -> dict[str, Any]:
