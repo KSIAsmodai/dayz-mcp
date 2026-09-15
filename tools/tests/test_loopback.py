@@ -305,17 +305,17 @@ class LoopbackTest(unittest.TestCase):
         snapshot = self.state.status_snapshot()
         self.assertEqual(snapshot["peers"]["client"]["version"], "4~game")
 
-    def test_drive_probe_client_routes_to_client_peer(self) -> None:
-        self.assertEqual(loopback.peer_for_command("drive_probe_client"), "client")
-        self.assertIn("drive_probe_client", loopback.WHITELISTED_COMMANDS)
+    def test_retired_drive_probe_client_is_not_whitelisted(self) -> None:
+        self.assertNotIn("drive_probe_client", loopback.WHITELISTED_COMMANDS)
+        self.assertNotIn("drive_probe_client", loopback.CLIENT_COMMANDS)
 
         status, body = self.state.enqueue_command("drive_probe_client", {"throttle": 1.0})
-        self.assertEqual(status, 200)
-        self.assertEqual(body["peer"], "client")
+        self.assertEqual(status, 400)
+        self.assertEqual(body, {"error": "not_whitelisted"})
 
         status, body = self.state.enqueue_command("drive_probe_client", {"throttle": 1.0}, peer="server")
         self.assertEqual(status, 400)
-        self.assertEqual(body, {"error": "bad_peer"})
+        self.assertEqual(body, {"error": "not_whitelisted"})
 
     def test_vehicle_trace_routes_to_client_and_uses_one_result_per_read_id(self) -> None:
         args = {

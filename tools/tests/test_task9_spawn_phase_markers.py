@@ -53,10 +53,9 @@ BRIDGE = WORKSPACE_ROOT / "scripts" / "5_Mission" / "MCPBridge.c"
 # returned ok:1 found:1 pos_real=[7500, 313.31, 7500] -- 313.31 m between what was asked and where
 # it sat, against the 2.0 m the old radius looked for; and a CivilianSedan requested at y=0
 # sat at y=4.69, also above that radius. Two of two, no timeout.
-# The other half of the fix is NOT gated (NeutralizeDriveProbeControls on the failure and
-# timeout paths of vehicle_drive): vehicle_drive is in the bridge SERVER_COMMANDS but NOT on the
-# MCP tool surface, so it is only reachable by calling the daemon raw. A path the
-# surface does not expose cannot regress through normal agent use either.
+# A retired server drive probe used to sit beside this spawn-readiness work; the
+# MCP tool surface never exposed it, so a path the surface does not expose cannot
+# regress through normal agent use either.
 # Re-frozen 2026-08-16 (second time that day) against the bridge with the API-key fix: the key
 # is no longer read only once. ReloadKeyAfterFailure re-reads dayz_mcp.json when the poll backoff
 # reaches KEY_RELOAD_BACKOFF_S (4 s) and adopts the key ONLY if it changed, resetting backoff to 0; an
