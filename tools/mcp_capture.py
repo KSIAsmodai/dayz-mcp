@@ -889,6 +889,21 @@ def probe_input_desktop() -> str:
         return "unknown"
 
 
+def _grab_subprocess_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for mcp-grab.ps1.
+
+    Git Bash (and some WSL/MSYS shells) inherit a Unix ``PSModulePath`` that
+    poisons Windows PowerShell so core cmdlets are ``command not found``
+    (fb-20260915-011312-ba70). Drop the variable and let PowerShell use its
+    own default module path.
+    """
+    env = dict(os.environ if base is None else base)
+    for key in list(env):
+        if key.casefold() == "psmodulepath":
+            env.pop(key, None)
+    return env
+
+
 def _run_window_capture(output_path: str, process_name: str, timeout_s: float, method: str = DEFAULT_GRAB_METHOD, client_pid: int = 0, cmdline_match: str = "") -> dict[str, Any]:
     if probe_input_desktop() == "locked":
         return {"ok": False, "error": "session_locked"}
@@ -922,6 +937,7 @@ def _run_window_capture(output_path: str, process_name: str, timeout_s: float, m
             text=True,
             timeout=timeout_s,
             check=False,
+            env=_grab_subprocess_env(),
         )
         stdout_lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
         payload: dict[str, Any] = {}
@@ -940,6 +956,8 @@ def _run_window_capture(output_path: str, process_name: str, timeout_s: float, m
         return payload
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "capture_timeout"}
+    except FileNotFoundError:
+        return {"ok": False, "error": "capture_backend_failed:command_not_found"}
     except OSError as exc:
         return {"ok": False, "error": f"capture_backend_failed: {exc}"}
 
