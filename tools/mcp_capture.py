@@ -930,15 +930,19 @@ def _run_window_capture(output_path: str, process_name: str, timeout_s: float, m
     elif client_pid and int(client_pid) > 0:
         cmd += ["-ClientPid", str(int(client_pid))]
     try:
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-            env=_grab_subprocess_env(),
-        )
+        run_kwargs: dict[str, object] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "timeout": timeout_s,
+            "check": False,
+            "env": _grab_subprocess_env(),
+        }
+        if os.name == "nt":
+            run_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NO_WINDOW", 0x08000000
+            )
+        proc = subprocess.run(cmd, **run_kwargs)
         stdout_lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
         payload: dict[str, Any] = {}
         if stdout_lines:

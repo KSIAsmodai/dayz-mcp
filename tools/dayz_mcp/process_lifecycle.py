@@ -57,6 +57,8 @@ _DAYZ_IMAGE_NAMES = frozenset(
 # these is reported in ports_in_use whatever its image, so a caller can pick
 # another port; only DayZ images occupy the box.
 _DAYZ_PORT_RANGE = range(2302, 3000)
+# Visible window that does not take the foreground.
+SW_SHOWNOACTIVATE = 4
 _PORT_SCAN_UNKNOWN_HINT = (
     "port_scan_unknown: the daemon could not read the host UDP socket table "
     "(psutil/netstat); waiting does not help, restore that first"
@@ -1416,6 +1418,11 @@ class ProcessLifecycle:
         kwargs: dict[str, object] = {"cwd": cwd, "close_fds": True}
         if os.name == "nt" and window_style == "hidden":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        elif os.name == "nt" and window_style == "normal":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = SW_SHOWNOACTIVATE
+            kwargs["startupinfo"] = startupinfo
         return subprocess.Popen(argv, **kwargs)
 
     @staticmethod
