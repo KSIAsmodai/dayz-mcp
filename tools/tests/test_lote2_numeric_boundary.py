@@ -77,12 +77,13 @@ class NumericBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
     def test_census_includes_alias_optional_vectors_and_conditional_tool(self):
         rows = set(self.rows)
-        self.assertEqual(len(rows), 122)
+        self.assertEqual(len(rows), 123)
         self.assertIn(("lease_acquire", "max_wait_s", "float"), rows)
         self.assertIn(("exec_enforce", "timeout_s", "float"), rows)
         self.assertIn(("object_anim", "phase", "float"), rows)
         self.assertIn(("scene_raycast", "from_pos", "vector"), rows)
         self.assertIn(("dayz_test_run", "client_start_budget_s", "float"), rows)
+        self.assertIn(("dayz_test_close", "graceful_timeout_s", "float"), rows)
         self.assertIn(("inventory_attach", "pos", "vector"), rows)
         self.assertIn(("inventory_attach", "object_id", "int"), rows)
         self.assertIn(("inventory_attach", "timeout_s", "float"), rows)

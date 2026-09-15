@@ -351,6 +351,20 @@ class ControlClient:
     async def lifecycle_status(self) -> dict[str, object]:
         return await self._session_call("/lifecycle/status")
 
+    async def lifecycle_close(self, run_id: str) -> dict[str, object]:
+        payload: dict[str, object] = {"run_id": run_id}
+        token = self.active_lease_token
+        if isinstance(token, str) and token:
+            payload["lease_token"] = token
+        return await self._session_call("/lifecycle/close", payload)
+
+    async def lifecycle_reap(self, run_id: str) -> dict[str, object]:
+        payload: dict[str, object] = {"run_id": run_id}
+        token = self.active_lease_token
+        if isinstance(token, str) and token:
+            payload["lease_token"] = token
+        return await self._session_call("/lifecycle/reap", payload)
+
     def _bad_session_response(self) -> None:
         raise ControlClientError(
             "daemon_bad_session_response",

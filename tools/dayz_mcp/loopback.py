@@ -141,6 +141,7 @@ LIFECYCLE_ROUTES = {
     "/lifecycle/start": "start",
     "/lifecycle/ack": "ack",
     "/lifecycle/stop": "stop",
+    "/lifecycle/close": "close",
     "/lifecycle/adopt": "adopt",
     "/lifecycle/reap": "reap",
     "/lifecycle/status": "status",
@@ -3483,6 +3484,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif action == "stop":
             result = lifecycle.stop_run(client, token, body.get("run_id"))
+        elif action == "close":
+            result = lifecycle.close_run(client, token, body.get("run_id"))
         elif action == "adopt":
             result = lifecycle.adopt_run(client, token, body.get("run_id"))
         elif action == "reap":

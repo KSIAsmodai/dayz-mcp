@@ -14,7 +14,7 @@ EXPECTED_PROFILE_TOOL_NAMES = {
     ("standard", "claude"): [
         "dayz_knowledge_find", "dayz_knowledge_show", "dayz_knowledge_status", "dayz_knowledge_prepare",
         "session_acquire", "session_wait", "session_acquire_wait", "lease_acquire", "session_cancel",
-        "session_heartbeat", "session_release", "session_status", "dayz_test_run", "dayz_test_stop",
+        "session_heartbeat", "session_release", "session_status", "dayz_test_run", "dayz_test_stop", "dayz_test_close",
         "query_player_state", "query_all_players", "logs_since", "world_spawn", "object_delete",
         "notify_players", "vehicle_enter", "scene_raycast", "telemetry_read", "query_get_in_condition",
         "vehicle_prepare_fixture", "surface_query", "player_teleport", "object_anim", "infected_drive",
@@ -28,7 +28,7 @@ EXPECTED_PROFILE_TOOL_NAMES = {
     ("standard", "codex"): [
         "dayz_knowledge_find", "dayz_knowledge_show", "dayz_knowledge_status", "dayz_knowledge_prepare",
         "session_acquire", "session_wait", "session_acquire_wait", "lease_acquire", "session_cancel",
-        "session_heartbeat", "session_release", "session_status", "dayz_test_run", "dayz_test_stop",
+        "session_heartbeat", "session_release", "session_status", "dayz_test_run", "dayz_test_stop", "dayz_test_close",
         "query_player_state", "query_all_players", "logs_since", "world_spawn", "object_delete",
         "notify_players", "vehicle_enter", "scene_raycast", "telemetry_read", "query_get_in_condition",
         "vehicle_prepare_fixture", "surface_query", "player_teleport", "object_anim", "infected_drive",
@@ -42,7 +42,7 @@ EXPECTED_PROFILE_TOOL_NAMES = {
     ("exec_enforce", "claude"): [
         "dayz_knowledge_find", "dayz_knowledge_show", "dayz_knowledge_status", "dayz_knowledge_prepare",
         "session_acquire", "session_wait", "session_acquire_wait", "lease_acquire", "session_cancel",
-        "session_heartbeat", "session_release", "session_status", "dayz_test_run", "dayz_test_stop",
+        "session_heartbeat", "session_release", "session_status", "dayz_test_run", "dayz_test_stop", "dayz_test_close",
         "query_player_state", "query_all_players", "logs_since", "world_spawn", "object_delete",
         "notify_players", "vehicle_enter", "scene_raycast", "telemetry_read", "query_get_in_condition",
         "vehicle_prepare_fixture", "surface_query", "player_teleport", "object_anim", "infected_drive",
@@ -56,7 +56,7 @@ EXPECTED_PROFILE_TOOL_NAMES = {
     ("exec_enforce", "codex"): [
         "dayz_knowledge_find", "dayz_knowledge_show", "dayz_knowledge_status", "dayz_knowledge_prepare",
         "session_acquire", "session_wait", "session_acquire_wait", "lease_acquire", "session_cancel",
-        "session_heartbeat", "session_release", "session_status", "dayz_test_run", "dayz_test_stop",
+        "session_heartbeat", "session_release", "session_status", "dayz_test_run", "dayz_test_stop", "dayz_test_close",
         "query_player_state", "query_all_players", "logs_since", "world_spawn", "object_delete",
         "notify_players", "vehicle_enter", "scene_raycast", "telemetry_read", "query_get_in_condition",
         "vehicle_prepare_fixture", "surface_query", "player_teleport", "object_anim", "infected_drive",

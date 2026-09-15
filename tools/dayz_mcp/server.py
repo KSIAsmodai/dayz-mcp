@@ -1581,6 +1581,16 @@ class ClientRuntime:
     async def lifecycle_status(self) -> dict[str, Any]:
         return await self._control_with_lazy_spawn(self._control.lifecycle_status)
 
+    async def lifecycle_close(self, run_id: str) -> dict[str, Any]:
+        return await self._control_with_lazy_spawn(
+            self._control.lifecycle_close, run_id
+        )
+
+    async def lifecycle_reap(self, run_id: str) -> dict[str, Any]:
+        return await self._control_with_lazy_spawn(
+            self._control.lifecycle_reap, run_id
+        )
+
     def _default_spawn(self) -> int | None:
         return daemon.spawn_detached(
             list(self._daemon_argv), log=self._log, cwd=self._daemon_cwd
@@ -4304,7 +4314,8 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "Stop uses forced process kill, not orderly mission teardown: "
             "RPT exit metrics (Leaked counts, Destroying game, Termination "
             "successfully completed) are not valid after this tool. status "
-            "succeeded means processes are gone; exit_metrics_valid is false."
+            "succeeded means processes are gone; exit_metrics_valid is false. "
+            "For an orderly shutdown first, use dayz_test_close."
         )
     )
     async def dayz_test_stop(
@@ -4333,6 +4344,43 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                 # serializes str(exc) alone. `from exc` keeps the cause in
                 # __cause__ for LOCAL diagnosis (needed to see why build:true failed), not for the wire.
                 _log_opaque_failure(client, "dayz_test_stop", exc)
+                raise ToolError(_opaque_dayz_test_failure(exc)) from exc
+
+    @app.tool(
+        description=(
+            f"{LEASE_TOOL_LINE} For the session that owns the run. Ask the "
+            "run's windows to close as a person would; wait for each launched "
+            "role's orderly termination. Graceful only when every launched "
+            "role wrote a new termination line and the run was retired as "
+            "run_reaped. When stop_required is true, release the lease and "
+            "call dayz_test_stop."
+        )
+    )
+    async def dayz_test_close(
+        run_id: StrictStr,
+        graceful_timeout_s: StrictFloat = 45,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        client = _client_runtime()
+
+        async def report(stage: str, message: str | None) -> None:
+            await report_dayz_progress(ctx, stage, message)
+
+        async with client.tool_lock:
+            try:
+                with _typed_dayz_test_value_errors():
+                    return await dayz_test_tool.execute_dayz_test_close(
+                        client,
+                        run_id,
+                        graceful_timeout_s=graceful_timeout_s,
+                        progress_cb=report,
+                    )
+            except dayz_test_tool.DayzTestToolError as error:
+                raise ToolError(error.code) from None
+            except ToolError:
+                raise
+            except Exception as exc:
+                _log_opaque_failure(client, "dayz_test_close", exc)
                 raise ToolError(_opaque_dayz_test_failure(exc)) from exc
 
     @app.tool(description="Read the authoritative server-side player state.")
