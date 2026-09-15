@@ -81,6 +81,7 @@ class ActionUseAppToolTest(unittest.IsolatedAsyncioTestCase):
         forwarded = call.await_args.args
         self.assertEqual(forwarded[0], COMMAND)
         self.assertEqual(forwarded[1]["action"], "ActionOpenDoors")
+        self.assertNotIn("target", forwarded[1])
         self.assertEqual(forwarded[2], "client")
 
 
