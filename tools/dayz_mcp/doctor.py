@@ -1062,6 +1062,25 @@ def _check_manifest_backup_retention(
         )
 
 
+def _check_manifest_backup_quarantined(
+    sources: DoctorSources, findings: list[dict[str, object]]
+) -> None:
+    try:
+        count = LifecycleRecoveryFaultStore(
+            sources.runtime_paths
+        ).manifest_backup_quarantine_count()
+    except Exception:
+        return
+    if count:
+        findings.append(
+            _finding(
+                "MANIFEST_BACKUP_QUARANTINED",
+                severity="WARN",
+                count=count,
+            )
+        )
+
+
 def _check_launchers(
     roots: tuple[Path, ...], findings: list[dict[str, object]]
 ) -> None:
@@ -1246,6 +1265,7 @@ def _diagnose(sources: DoctorSources, *, require_clean: bool) -> dict[str, objec
         )
     _check_runs(sources, managed, findings)
     _check_manifest_backup_retention(sources, findings)
+    _check_manifest_backup_quarantined(sources, findings)
     _check_launchers(sources.scan_roots, findings)
     _check_native_bundle_closure(sources, findings)
     _check_knowledge_pack(sources, registrations, findings)
