@@ -135,13 +135,29 @@ def observed_telemetry(
 
 
 def select_get_in_transport(
-    nearby: list[dict[str, str]], expected_type: str
-) -> tuple[dict[str, str] | None, str | None]:
+    nearby: list[dict[str, object]], expected_type: str, pos: list[float]
+) -> tuple[dict[str, object] | None, str | None]:
     transports = [item for item in nearby if item.get("kind") == "transport"]
     if expected_type == "":
-        if not transports:
+        best = None
+        best_dist = 0.0
+        for item in transports:
+            item_pos = item.get("pos")
+            if not isinstance(item_pos, (list, tuple)) or len(item_pos) < 3:
+                continue
+            dx = float(item_pos[0]) - float(pos[0])
+            dy = float(item_pos[1]) - float(pos[1])
+            dz = float(item_pos[2]) - float(pos[2])
+            dist_sq = dx * dx + dy * dy + dz * dz
+            if best is None:
+                best = item
+                best_dist = dist_sq
+            elif dist_sq < best_dist:
+                best = item
+                best_dist = dist_sq
+        if best is None:
             return None, "no_vehicle"
-        return transports[0], None
+        return best, None
     matches = [item for item in transports if item.get("type") == expected_type]
     if not matches:
         return None, "no_vehicle"
@@ -615,33 +631,47 @@ class TestVehicleTelemetryWireContract(unittest.TestCase):
         self.assertNotIn("type =", ctor)
         self.assertNotIn("seat =", ctor)
 
-    def test_omitted_defaults_select_first_transport_and_seat_zero(self) -> None:
+    def test_fb_deb9_p2_model_omitted_type_selects_nearest_transport_and_seat_zero(
+        self,
+    ) -> None:
         nearby = [
-            {"kind": "prop", "type": "Land_House"},
-            {"kind": "transport", "type": "CivilianSedan", "id": "a"},
-            {"kind": "transport", "type": "Boat_01_Blue", "id": "b"},
+            {"kind": "prop", "type": "Land_House", "pos": [0, 0, 0]},
+            {"kind": "transport", "type": "CivilianSedan", "id": "a", "pos": [10, 0, 0]},
+            {"kind": "transport", "type": "Boat_01_Blue", "id": "b", "pos": [1, 0, 0]},
         ]
-        chosen, error = select_get_in_transport(nearby, "")
+        chosen, error = select_get_in_transport(nearby, "", [0, 0, 0])
+        self.assertIsNone(error)
+        assert chosen is not None
+        self.assertEqual(chosen["id"], "b")
+        self.assertIsNone(reject_seat_before_side_effect(0, 4))
+        self.assertEqual(start_vehicle_indices(0), (0, 0))
+
+    def test_fb_deb9_p2_model_ties_keep_the_first_transport(self) -> None:
+        nearby = [
+            {"kind": "transport", "type": "CivilianSedan", "id": "a", "pos": [5, 0, 0]},
+            {"kind": "transport", "type": "Boat_01_Blue", "id": "b", "pos": [5, 0, 0]},
+        ]
+        chosen, error = select_get_in_transport(nearby, "", [0, 0, 0])
         self.assertIsNone(error)
         assert chosen is not None
         self.assertEqual(chosen["id"], "a")
-        self.assertIsNone(reject_seat_before_side_effect(0, 4))
-        self.assertEqual(start_vehicle_indices(0), (0, 0))
 
     def test_explicit_type_requires_exactly_one_gettype_match(self) -> None:
         nearby = [
             {"kind": "transport", "type": "CivilianSedan", "id": "sedan"},
             {"kind": "transport", "type": "Boat_01_Blue", "id": "boat"},
         ]
-        chosen, error = select_get_in_transport(nearby, "Boat_01_Blue")
+        chosen, error = select_get_in_transport(nearby, "Boat_01_Blue", [0, 0, 0])
         self.assertIsNone(error)
         assert chosen is not None
         self.assertEqual(chosen["id"], "boat")
         self.assertEqual(
-            select_get_in_transport(nearby, "Hatchback_02")[1], "no_vehicle"
+            select_get_in_transport(nearby, "Hatchback_02", [0, 0, 0])[1], "no_vehicle"
         )
         nearby.append({"kind": "transport", "type": "Boat_01_Blue", "id": "boat2"})
-        self.assertEqual(select_get_in_transport(nearby, "Boat_01_Blue")[1], "bad_args")
+        self.assertEqual(
+            select_get_in_transport(nearby, "Boat_01_Blue", [0, 0, 0])[1], "bad_args"
+        )
 
     def test_seat_fail_closed_and_anim_start_share_index(self) -> None:
         self.assertEqual(reject_seat_before_side_effect(-1, 4), "bad_args")
