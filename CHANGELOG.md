@@ -33,6 +33,7 @@ Merged to `main` after [v1.2](https://github.com/willy92wins/dayz-mcp/releases/t
 - `python -m dayz_mcp.doctor` parses supervised registrations and `--exec-audit-path` again, so it checks the daemon instead of reporting CONFIG_UNREADABLE. The audit path is now compared as part of the daemon policy (#48).
 - `pack-addon.ps1` passes `-packonly` when the source has no `.p3d`/`.paa`/`.rvmat`, matching the test worker so AddonBuilder does not binarize against every `config.cpp` under `P:\` (fb-20260915-005408-bcd8).
 - `capture_screenshot` launches the grab without an inherited `PSModulePath`, so a Git Bash-poisoned module path cannot hide PowerShell cmdlets (fb-20260915-011312-ba70).
+- `vehicle_release` Abort autodumps a live trace before clearing it; stop the trace in a separate call, then release (fb-20260915-014739-7ad1).
 
 ### Security
 

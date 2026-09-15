@@ -29,6 +29,8 @@ _TRACE_SEATED_CLAUSE = "mode=start requires the local player seated"
 _TRACE_NOT_SEATED_CLAUSE = "otherwise the bridge returns not_seated"
 _TRACE_EXISTS_CLAUSE = "already exists returns trace_exists"
 _TRACE_CLEAR_CLAUSE = "mode=clear before reuse"
+_TRACE_STOP_BEFORE_RELEASE = "Call mode=stop before vehicle_release"
+_RELEASE_STOP_FIRST = "Call vehicle_trace mode=stop before vehicle_release"
 _SPAWN_NO_ATTACH_CLAUSE = "Does not attach wheels, battery, or spark plug"
 _SPAWN_PREPARE_CLAUSE = "follow with vehicle_prepare_fixture"
 _SPAWN_FLAGS_MASK_CLAUSE = (
@@ -48,6 +50,7 @@ def _assert_vehicle_trace_copy(test: unittest.TestCase, description: str) -> Non
     test.assertIn(_TRACE_NOT_SEATED_CLAUSE, description)
     test.assertIn(_TRACE_EXISTS_CLAUSE, description)
     test.assertIn(_TRACE_CLEAR_CLAUSE, description)
+    test.assertIn(_TRACE_STOP_BEFORE_RELEASE, description)
 
 
 def _assert_world_spawn_copy(test: unittest.TestCase, description: str) -> None:
@@ -109,6 +112,17 @@ class PreconditionDocsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('result.error = "not_seated"', dispatch)
         self.assertIn('args.mode == "clear"', dispatch)
         self.assertIn('s_LastError = "trace_exists"', start)
+
+    def test_vehicle_release_names_stop_then_release_and_abort_dumps(self) -> None:
+        description = _tool_description(self.app, "vehicle_release")
+        self.assertTrue(description.startswith(LEASE_TOOL_LINE), description)
+        self.assertIn(_RELEASE_STOP_FIRST, description)
+        abort = _method_body(
+            CAR_SCRIPT.read_text(encoding="utf-8"),
+            "static void Abort(string reason)",
+        )
+        self.assertIn("Dump(s_TraceId)", abort)
+        self.assertLess(abort.index("Dump("), abort.index("ClearState("))
 
     def test_world_spawn_does_not_claim_fixture_prep(self) -> None:
         description = _tool_description(self.app, "world_spawn")

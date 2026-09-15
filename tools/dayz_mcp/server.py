@@ -5600,7 +5600,9 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "otherwise the bridge returns not_seated. mode=start while a trace "
             "already exists returns trace_exists; call mode=clear before reuse. "
             "mode=dump writes JSONL to $profile:dayz_mcp_trace_<trace_id>.jsonl "
-            "and stop autodumps the same file."
+            "and stop autodumps the same file. Call mode=stop before "
+            "vehicle_release; release Abort autodumps remaining samples then "
+            "clears the trace."
         )
     )
     async def vehicle_trace(
@@ -5637,8 +5639,10 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
 
     @app.tool(
         description=(
-            "Requires a lease (session_acquire_wait). Release sustained "
-            "vehicle control (stop driving)."
+            f"{LEASE_TOOL_LINE} Release sustained vehicle control "
+            "(stop driving). Call vehicle_trace mode=stop before "
+            "vehicle_release: an active trace is autodumped then cleared on "
+            "Abort, so the stop result is what you read."
         )
     )
     async def vehicle_release(timeout_s: StrictFloat = DEFAULT_TOOL_TIMEOUT_S) -> dict[str, Any]:
