@@ -182,7 +182,7 @@ class MCPClientBridge extends MCPJobRunnerOwner
 	//! the tools it registers. Written as short literals joined with +, split at
 	//! commas (5_Mission\gui\chat\chatline.c:8): the longest single literal in
 	//! vanilla is 237 bytes and this census is longer than that.
-	protected const string CLIENT_POLL_CAPS = "action_use,camera_get,camera_set,drive_probe_client,engine_set,key_press,player_respawn," + "restore_gameplay,ui_click,ui_dialog,ui_focus,ui_reload_layout,ui_set_text,ui_tree," + "vehicle_control,vehicle_get_in_client,vehicle_release,vehicle_telemetry,vehicle_trace";
+	protected const string CLIENT_POLL_CAPS = "action_use,action_use_target,camera_get,camera_set,drive_probe_client,engine_set,key_press,player_respawn," + "restore_gameplay,ui_click,ui_dialog,ui_focus,ui_reload_layout,ui_set_text,ui_tree," + "vehicle_control,vehicle_get_in_client,vehicle_release,vehicle_telemetry,vehicle_trace";
 
 	protected static ref MCPClientBridge m_Instance;
 
@@ -826,6 +826,10 @@ class MCPClientBridge extends MCPJobRunnerOwner
 			postNow = DispatchUiFocus(command, result);
 		}
 		else if (command.cmd == "action_use")
+		{
+			postNow = DispatchActionUse(command, result);
+		}
+		else if (command.cmd == "action_use_target")
 		{
 			postNow = DispatchActionUse(command, result);
 		}
@@ -2045,10 +2049,11 @@ class MCPClientBridge extends MCPJobRunnerOwner
 
 		result.action = action.Type().ToString();
 
-		vector searchPos;
-		if (command.args.pos && command.args.pos.Count() > 0)
+		string targetMode;
+		if (command.cmd == "action_use_target")
 		{
-			if (!ArrayToVector(command.args.pos, searchPos))
+			targetMode = command.args.target;
+			if (targetMode != "hands" && targetMode != "self")
 			{
 				result.ok = false;
 				result.error = "bad_args";
@@ -2057,35 +2062,95 @@ class MCPClientBridge extends MCPJobRunnerOwner
 		}
 		else
 		{
-			searchPos = player.GetPosition();
+			if (command.args.target != "" && command.args.target != "world")
+			{
+				result.ok = false;
+				result.error = "bad_args";
+				return true;
+			}
+
+			targetMode = "world";
 		}
 
-		float searchRadius = ACTION_USE_DEFAULT_RADIUS;
-		if (command.args.radius > 0.0 && IsFiniteFloat(command.args.radius))
+		result.target = targetMode;
+
+		ActionTarget actionTarget;
+		if (targetMode == "hands")
 		{
-			searchRadius = command.args.radius;
-		}
+			ItemBase targetItem = player.GetItemInHands();
+			if (!targetItem)
+			{
+				result.ok = false;
+				result.error = "no_item_in_hands";
+				return true;
+			}
 
-		string classFilter = command.args.classname;
-		Object targetObj = FindNearestObjectNearClient(searchPos, searchRadius, classFilter, player);
-		if (!targetObj)
+			if (command.args.classname != "" && targetItem.GetType() != command.args.classname)
+			{
+				result.ok = false;
+				result.error = "held_item_mismatch";
+				return true;
+			}
+
+			ItemBase targetParent = ItemBase.Cast(targetItem.GetHierarchyParent());
+			actionTarget = new ActionTarget(targetItem, targetParent, -1, vector.Zero, -1);
+			result.classname = targetItem.GetType();
+			result.pos_real = new array<float>();
+			VectorToArray(targetItem.GetPosition(), result.pos_real);
+			result.distance = vector.Distance(player.GetPosition(), targetItem.GetPosition());
+		}
+		else if (targetMode == "self")
 		{
-			result.ok = false;
-			result.error = "target_not_found";
-			return true;
+			actionTarget = new ActionTarget(null, null, -1, vector.Zero, -1);
+			result.classname = "";
+			result.pos_real = new array<float>();
+			VectorToArray(player.GetPosition(), result.pos_real);
+			result.distance = 0.0;
 		}
+		else
+		{
+			vector searchPos;
+			if (command.args.pos && command.args.pos.Count() > 0)
+			{
+				if (!ArrayToVector(command.args.pos, searchPos))
+				{
+					result.ok = false;
+					result.error = "bad_args";
+					return true;
+				}
+			}
+			else
+			{
+				searchPos = player.GetPosition();
+			}
 
-		// cursorHitPos must be a real point on the target. CCTCursor.Can
-		// measures DistanceSq from GetCursorHitPos (cctcursor.c:30-33).
-		// ForceTarget writes vector.Zero (actionmanagerclient.c:466), which
-		// is ~10 km from the player on Chernarus and always fails.
-		vector cursorHitPos = targetObj.GetPosition();
-		ActionTarget actionTarget = new ActionTarget(targetObj, null, -1, cursorHitPos, 0);
+			float searchRadius = ACTION_USE_DEFAULT_RADIUS;
+			if (command.args.radius > 0.0 && IsFiniteFloat(command.args.radius))
+			{
+				searchRadius = command.args.radius;
+			}
 
-		result.classname = targetObj.GetType();
-		result.pos_real = new array<float>();
-		VectorToArray(cursorHitPos, result.pos_real);
-		result.distance = vector.Distance(player.GetPosition(), cursorHitPos);
+			string classFilter = command.args.classname;
+			Object targetObj = FindNearestObjectNearClient(searchPos, searchRadius, classFilter, player);
+			if (!targetObj)
+			{
+				result.ok = false;
+				result.error = "target_not_found";
+				return true;
+			}
+
+			// cursorHitPos must be a real point on the target. CCTCursor.Can
+			// measures DistanceSq from GetCursorHitPos (cctcursor.c:30-33).
+			// ForceTarget writes vector.Zero (actionmanagerclient.c:466), which
+			// is ~10 km from the player on Chernarus and always fails.
+			vector cursorHitPos = targetObj.GetPosition();
+			actionTarget = new ActionTarget(targetObj, null, -1, cursorHitPos, 0);
+
+			result.classname = targetObj.GetType();
+			result.pos_real = new array<float>();
+			VectorToArray(cursorHitPos, result.pos_real);
+			result.distance = vector.Distance(player.GetPosition(), cursorHitPos);
+		}
 
 		if (amc.GetRunningAction() != null)
 		{

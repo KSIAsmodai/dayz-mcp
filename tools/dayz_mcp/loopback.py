@@ -91,6 +91,7 @@ CLIENT_COMMANDS = {
     "ui_focus",
     "ui_dialog",
     "action_use",
+    "action_use_target",
 }
 
 CREDENTIAL_RECOVERY_TTL_S = 300.0
@@ -784,6 +785,18 @@ _COMMAND_ARG_SCHEMAS: dict[str, _CommandSchema] = {
                 "action": _is_non_empty_string,
                 "classname": _is_string,
                 "pos": _is_real_vector3,
+                "radius": _SAFE_RADIUS_200,
+            },
+        )
+    ),
+    "action_use_target": _command_schema(
+        _schema_variant(
+            required=("action", "target"),
+            optional=("classname", "radius"),
+            validators={
+                "action": _is_non_empty_string,
+                "target": _one_of("hands", "self"),
+                "classname": _is_string,
                 "radius": _SAFE_RADIUS_200,
             },
         )

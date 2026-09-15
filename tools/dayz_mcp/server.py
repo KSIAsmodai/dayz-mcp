@@ -610,6 +610,7 @@ _BRIDGE_COMMAND_TOOLS: dict[str, dict[str, str | None]] = {
     },
     "client": {
         "action_use": "action_use",
+        "action_use_target": "action_use",
         "camera_get": "camera_get",
         "camera_set": "camera_set",
         "drive_probe_client": None,  # internal probe, never exposed
@@ -697,6 +698,23 @@ def _with_capability_comparison(
         )
         enriched[key] = block
     return enriched
+
+
+def _client_peer_announces_command(status: object, command: str) -> bool:
+    if not isinstance(status, dict):
+        return False
+    client_peer = status.get("client_peer")
+    if not isinstance(client_peer, dict):
+        return False
+    capabilities = client_peer.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return False
+    if capabilities.get("state") != "announced":
+        return False
+    announced = capabilities.get("announced_commands")
+    if not isinstance(announced, list):
+        return False
+    return command in announced
 
 
 def _registry_tool_records(app: FastMCP) -> list[dict[str, object]]:
@@ -5866,6 +5884,13 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         "action = the Enforce class name of the user action "
         "(candidate.Type().ToString(), e.g. ActionOpenDoors), NOT the "
         "visible/localized prompt text; classname = the target's GetType(). "
+        "target selects the ActionTarget: world (default) is the nearest world "
+        "object, hands is the item in the player's hands, self is a null target; "
+        "the result echoes that same mode. hands and self need an addon that "
+        "announces action_use_target and otherwise return target_not_supported "
+        "without calling the bridge; they suit actions whose target condition "
+        "does not read the cursor position (for example ActionDrink). A hands or "
+        "self call whose result does not echo that mode is target_not_supported. "
         "Routes to MCPClientBridge on the CLIENT and calls "
         "ActionManagerClient.PerformActionStart with the held item and a "
         "synthetic target (component=-1). This enters the normal client action "
@@ -5887,12 +5912,25 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         classname: str = "",
         pos: list[StrictFloat] | None = None,
         radius: StrictFloat = 5.0,
+        target: StrictStr = "world",
         timeout_s: StrictFloat = DEFAULT_TOOL_TIMEOUT_S,
     ) -> dict[str, Any]:
         if not isinstance(action, str) or action == "":
             raise ToolError(_bad_args("action", action, "be a non-empty string"))
         if not isinstance(classname, str):
             raise ToolError(_bad_args("classname", classname, "be a string"))
+        if not isinstance(target, str) or target not in {"world", "hands", "self"}:
+            raise ToolError(
+                _bad_args("target", target, "be 'world', 'hands' or 'self'")
+            )
+        if pos is not None and target != "world":
+            raise ToolError(
+                _bad_args("pos", pos, "be omitted unless target is world")
+            )
+        if classname != "" and target == "self":
+            raise ToolError(
+                _bad_args("classname", classname, "be omitted when target is self")
+            )
         radius_error = _bad_args(
             "radius",
             radius,
@@ -5906,8 +5944,28 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             args["classname"] = classname
         if pos is not None:
             args["pos"] = _require_vec3(pos, "pos")
+        if target == "world":
+            async with runtime.tool_lock:
+                return await runtime.call_bridge(
+                    "action_use", args, "client", _timeout(timeout_s)
+                )
+        announced = False
+        try:
+            status = await runtime.bridge_status_payload()
+            announced = _client_peer_announces_command(status, "action_use_target")
+        except Exception:
+            announced = False
+        if not announced:
+            raise ToolError("target_not_supported")
+        args["target"] = target
         async with runtime.tool_lock:
-            return await runtime.call_bridge("action_use", args, "client", _timeout(timeout_s))
+            result = await runtime.call_bridge(
+                "action_use_target", args, "client", _timeout(timeout_s)
+            )
+        echoed = result.get("target") if isinstance(result, dict) else None
+        if echoed != target:
+            raise ToolError("target_not_supported")
+        return result
 
     @app.tool(
         description=(
