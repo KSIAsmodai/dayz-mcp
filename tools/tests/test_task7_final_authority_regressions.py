@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from dayz_mcp import loopback, server, session_coordination as coordination_module
 from dayz_mcp.runtime_state import CoordinationSnapshotStore, RuntimePaths
@@ -545,8 +546,15 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
     def test_concurrent_same_client_queue_acquire_is_one_durable_ticket(self) -> None:
         first_audit_entered = threading.Event()
         resume_first_audit = threading.Event()
+        second_waiting = threading.Event()
         queued_events: list[str] = []
         blocked_once = False
+
+        class WaitProbe(threading.Condition):
+            def wait(self, timeout: float | None = None) -> bool:
+                if threading.current_thread().name == "same-b":
+                    second_waiting.set()
+                return super().wait(timeout)
 
         def audit(event: dict[str, object]) -> bool:
             nonlocal blocked_once
@@ -558,7 +566,7 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
             ):
                 blocked_once = True
                 first_audit_entered.set()
-                resume_first_audit.wait(1.0)
+                resume_first_audit.wait(5.0)
             if event.get("event") == "session_queued":
                 queued_events.append(str(event.get("ticket")))
             return True
@@ -566,6 +574,7 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
         coordinator = SessionCoordinator(
             token_fn=Sequence("token"), id_fn=Sequence("lease"), audit=audit
         )
+        coordinator._condition = WaitProbe()
         coordinator.acquire(IDENTITY, "owner")
         results: list[tuple[int, dict]] = []
         threads = (
@@ -582,14 +591,21 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
                 ),
             ),
         )
-        threads[0].start()
-        self.assertTrue(first_audit_entered.wait(1.0))
-        threads[1].start()
-        threads[1].join(0.02)
-        self.assertTrue(threads[1].is_alive())
-        resume_first_audit.set()
-        for thread in threads:
-            thread.join(2.0)
+        # RELEASE_AUDIT_TIMEOUT_S bounds the same-client reservation wait (pinned by
+        # test_same_client_retry_is_bounded_while_first_audit_is_stuck). Widen it so
+        # the barriers, not scheduler latency, decide the outcome.
+        with patch.object(coordination_module, "RELEASE_AUDIT_TIMEOUT_S", 10.0):
+            threads[0].start()
+            try:
+                self.assertTrue(first_audit_entered.wait(1.0))
+                threads[1].start()
+                # same-a holds the audit gate: same-b can only wait on its reservation.
+                self.assertTrue(second_waiting.wait(2.0))
+            finally:
+                resume_first_audit.set()
+                for thread in threads:
+                    if thread.is_alive():
+                        thread.join(2.0)
 
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         self.assertEqual([status for status, _payload in results], [202, 202])
