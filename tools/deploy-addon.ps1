@@ -26,6 +26,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Windows PowerShell 5.1 started from Git Bash inherits a Unix PSModulePath,
+# and module cmdlets such as Get-FileHash are then not recognized. Reset to
+# the machine path before any module cmdlet runs.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+  $machineModules = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+  if ($machineModules) {
+    $env:PSModulePath = $machineModules
+  }
+}
+
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Source)      { $Source      = Join-Path $root 'addon' }
 if (-not $Destination) { $Destination = Join-Path (Split-Path -Parent $root) 'DayZ_MCP' }
