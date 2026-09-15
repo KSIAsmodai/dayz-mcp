@@ -7,6 +7,7 @@ import os
 import secrets
 import stat
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -27,6 +28,12 @@ AUDIT_MAX_BYTES = 5 * 1024 * 1024
 AUDIT_BACKUPS = 5
 MANIFEST_BACKUP_RETAIN = 200
 MANIFEST_BACKUP_PRUNE_BATCH = 128
+# Sharing-violation retry for os.replace: well inside DAEMON_STARTUP_BUDGET_S
+# (40s) and below the 2s cap. 1s covers several 25ms..200ms backoffs.
+ATOMIC_REPLACE_RETRY_S = 1.0
+ATOMIC_REPLACE_RETRY_INITIAL_S = 0.025
+ATOMIC_REPLACE_RETRY_MAX_S = 0.200
+ATOMIC_REPLACE_RETRY_WINERRORS = frozenset({5, 32})
 
 _REDACTED = "[REDACTED]"
 _NON_PERSISTED_KEYS = frozenset(
@@ -951,44 +958,69 @@ class LifecycleRecoveryFaultStore:
         receipt_text = json.dumps(
             receipt, ensure_ascii=False, separators=(",", ":")
         ) + "\n"
-        receipt_sha = _sha256(receipt_text.encode("utf-8"))
+        receipt_bytes = receipt_text.encode("utf-8")
+        receipt_sha = _sha256(receipt_bytes)
         directory = (
             self.paths.lifecycle_recovery_faults_dir
             / "backups"
             / receipt_sha
         )
         with self._lock:
-            reused_manifest = False
-            try:
-                self._write_create_only_bytes(directory / "manifest.bin", raw)
-            except FileExistsError:
+            for _attempt in range(4):
+                reused_manifest = False
                 try:
-                    existing, _ = _read_pinned_regular_file(
-                        directory / "manifest.bin"
+                    self._write_create_only_bytes(directory / "manifest.bin", raw)
+                except FileExistsError:
+                    try:
+                        existing, _ = _read_pinned_regular_file(
+                            directory / "manifest.bin"
+                        )
+                    except (OSError, RuntimeError) as exc:
+                        raise ValueError("invalid_lifecycle_manifest_backup") from exc
+                    if existing != raw:
+                        if _strict_byte_prefix(existing, raw):
+                            self._quarantine_incomplete_manifest_backup(
+                                directory,
+                                receipt_sha=receipt_sha,
+                                reason="incomplete_manifest",
+                                expected=raw,
+                                observed=existing,
+                            )
+                            continue
+                        raise ValueError("invalid_lifecycle_manifest_backup")
+                    reused_manifest = True
+                try:
+                    self._write_create_only_text(
+                        directory / "receipt.json", receipt_text
                     )
-                except (OSError, RuntimeError) as exc:
-                    raise ValueError("invalid_lifecycle_manifest_backup") from exc
-                if existing != raw:
-                    raise ValueError("invalid_lifecycle_manifest_backup")
-                reused_manifest = True
-            try:
-                self._write_create_only_text(directory / "receipt.json", receipt_text)
-            except FileExistsError:
-                try:
-                    existing, _ = _read_pinned_regular_file(
-                        directory / "receipt.json"
-                    )
-                except (OSError, RuntimeError) as exc:
-                    raise ValueError("invalid_lifecycle_manifest_backup") from exc
-                if existing != receipt_text.encode("utf-8"):
-                    raise ValueError("invalid_lifecycle_manifest_backup")
-            if reused_manifest:
-                # Best effort: a reused backup that keeps its old mtime is only
-                # pruned sooner, while a raise here would roll back the manifest.
-                try:
-                    os.utime(directory, None)
-                except OSError:
-                    pass
+                except FileExistsError:
+                    try:
+                        existing, _ = _read_pinned_regular_file(
+                            directory / "receipt.json"
+                        )
+                    except (OSError, RuntimeError) as exc:
+                        raise ValueError("invalid_lifecycle_manifest_backup") from exc
+                    if existing != receipt_bytes:
+                        if _strict_byte_prefix(existing, receipt_bytes):
+                            self._quarantine_incomplete_manifest_backup(
+                                directory,
+                                receipt_sha=receipt_sha,
+                                reason="incomplete_receipt",
+                                expected=receipt_bytes,
+                                observed=existing,
+                            )
+                            continue
+                        raise ValueError("invalid_lifecycle_manifest_backup")
+                if reused_manifest:
+                    # Best effort: a reused backup that keeps its old mtime is only
+                    # pruned sooner, while a raise here would roll back the manifest.
+                    try:
+                        os.utime(directory, None)
+                    except OSError:
+                        pass
+                break
+            else:
+                raise ValueError("invalid_lifecycle_manifest_backup")
         return receipt_sha
 
     def checkpoint_manifest(self, raw: bytes) -> str:
@@ -1016,6 +1048,36 @@ class LifecycleRecoveryFaultStore:
                 "retain": MANIFEST_BACKUP_RETAIN,
                 "blocker": blocker,
             }
+
+    def manifest_backup_quarantine_count(self) -> int:
+        """Count quarantine-* real directories under backups/; never follows."""
+
+        with self._lock:
+            backups_dir = self.paths.lifecycle_recovery_faults_dir / "backups"
+            try:
+                _safe_directory(backups_dir)
+            except FileNotFoundError:
+                return 0
+            count = 0
+            try:
+                with os.scandir(backups_dir) as entries:
+                    for entry in entries:
+                        if not entry.name.startswith("quarantine-"):
+                            continue
+                        try:
+                            if not entry.is_dir(follow_symlinks=False):
+                                continue
+                            dir_stat = entry.stat(follow_symlinks=False)
+                        except OSError:
+                            continue
+                        if not stat.S_ISDIR(dir_stat.st_mode) or _is_reparse(
+                            dir_stat
+                        ):
+                            continue
+                        count += 1
+            except FileNotFoundError:
+                return 0
+            return count
 
     def _manifest_backup_retention_state(
         self,
@@ -1331,6 +1393,91 @@ class LifecycleRecoveryFaultStore:
             expected_sha256=expected_sha256,
         )
         return _sha256(text.encode("utf-8"))
+
+    def _quarantine_incomplete_manifest_backup(
+        self,
+        directory: Path,
+        *,
+        receipt_sha: str,
+        reason: str,
+        expected: bytes,
+        observed: bytes,
+    ) -> None:
+        """Rename an incomplete backup aside; never delete; never follow."""
+
+        try:
+            identity = _no_follow_directory_identity(directory)
+            _safe_directory(directory.parent)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("invalid_lifecycle_manifest_backup") from exc
+        stamp = (
+            str(self._utc_now_fn())
+            .replace(":", "")
+            .replace("-", "")
+            .replace("+", "")
+            .replace(".", "")
+        )
+        destination: Path | None = None
+        last_error: OSError | None = None
+        for _ in range(16):
+            name = f"quarantine-{receipt_sha}-{stamp}-{secrets.token_hex(4)}"
+            candidate = directory.parent / name
+            if _path_lexists(candidate):
+                continue
+            deadline: float | None = None
+            backoff = ATOMIC_REPLACE_RETRY_INITIAL_S
+            while True:
+                try:
+                    if _no_follow_directory_identity(directory) != identity:
+                        raise OSError("manifest_backup_directory_changed")
+                    os.rename(directory, candidate)
+                except PermissionError as error:
+                    winerror = getattr(error, "winerror", None)
+                    if winerror not in ATOMIC_REPLACE_RETRY_WINERRORS:
+                        last_error = error
+                        raise ValueError(
+                            "invalid_lifecycle_manifest_backup"
+                        ) from error
+                    last_error = error
+                    now = time.monotonic()
+                    if deadline is None:
+                        deadline = now + ATOMIC_REPLACE_RETRY_S
+                    if now >= deadline:
+                        raise ValueError(
+                            "invalid_lifecycle_manifest_backup"
+                        ) from error
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ValueError(
+                            "invalid_lifecycle_manifest_backup"
+                        ) from error
+                    time.sleep(min(backoff, remaining))
+                    backoff = min(backoff * 2, ATOMIC_REPLACE_RETRY_MAX_S)
+                    continue
+                except OSError as exc:
+                    last_error = exc
+                    raise ValueError("invalid_lifecycle_manifest_backup") from exc
+                destination = candidate
+                break
+            if destination is not None:
+                break
+        if destination is None:
+            raise ValueError("invalid_lifecycle_manifest_backup") from last_error
+        try:
+            if _no_follow_directory_identity(destination) != identity:
+                raise OSError("manifest_backup_directory_changed")
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("invalid_lifecycle_manifest_backup") from exc
+        payload = {
+            "format_version": 1,
+            "reason": reason,
+            "receipt_sha256": receipt_sha,
+            "expected_byte_length": len(expected),
+            "observed_byte_length": len(observed),
+            "observed_sha256": _sha256(observed),
+            "quarantined_at_utc": self._utc_now_fn(),
+        }
+        self._write_create_only_json(destination / "quarantine.json", payload)
 
     @staticmethod
     def _write_create_only_text(path: Path, text: str) -> None:
@@ -1968,6 +2115,10 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest().upper()
 
 
+def _strict_byte_prefix(existing: bytes, expected: bytes) -> bool:
+    return len(existing) < len(expected) and expected.startswith(existing)
+
+
 def _path_lexists(path: Path) -> bool:
     try:
         path.lstat()
@@ -2157,11 +2308,34 @@ def _atomic_write_text(
         if _target_identity(temporary) != temporary_identity:
             raise RuntimeError("atomic_temporary_changed")
         _verify_expected_target(path, original_identity, expected_sha256)
-        os.replace(temporary, path)
+        deadline: float | None = None
+        backoff = ATOMIC_REPLACE_RETRY_INITIAL_S
+        while True:
+            try:
+                os.replace(temporary, path)
+            except PermissionError as error:
+                winerror = getattr(error, "winerror", None)
+                if winerror not in ATOMIC_REPLACE_RETRY_WINERRORS:
+                    raise
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = now + ATOMIC_REPLACE_RETRY_S
+                if now >= deadline:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                time.sleep(min(backoff, remaining))
+                backoff = min(backoff * 2, ATOMIC_REPLACE_RETRY_MAX_S)
+                if _target_identity(temporary) != temporary_identity:
+                    raise RuntimeError("atomic_temporary_changed")
+                _verify_expected_target(path, original_identity, expected_sha256)
+                continue
+            break
         temporary = None
         if _target_identity(path) != temporary_identity:
             raise RuntimeError("atomic_replace_identity_mismatch")
-    except Exception:
+    finally:
         if descriptor is not None:
             try:
                 opened = os.fstat(descriptor)
@@ -2171,7 +2345,6 @@ def _atomic_write_text(
                 os.close(descriptor)
         if temporary is not None:
             _unlink_if_same(temporary, temporary_identity)
-        raise
 
 
 def atomic_write_json(path: Path, payload: object) -> None:
