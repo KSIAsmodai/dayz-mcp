@@ -1463,7 +1463,7 @@ class StateLockIoBoundaryTest(unittest.TestCase):
             id_fn=Sequence("lease"),
             audit=audit,
             cleanup=lambda *_args: {},
-            cleanup_timeout_s=0.05,
+            cleanup_timeout_s=5.0,
         )
         state = loopback.ServerState(
             "key", time_fn=clock, coordination=coordinator
@@ -1481,13 +1481,17 @@ class StateLockIoBoundaryTest(unittest.TestCase):
 
         state.retail_probe = retail_probe
         _, lease = coordinator.acquire(IDENTITY, "commit-expiry")
-        status, payload = state.enqueue_command(
-            "world_time_set",
-            {},
-            "server",
-            identity_payload=IDENTITY_PAYLOAD,
-            lease_token=lease["lease_token"],
-        )
+        # Release audits are awaited for min(RELEASE_AUDIT_TIMEOUT_S, cleanup budget
+        # left) and may land after the call; widen both so session_expired is written
+        # while enqueue_command is still inside expire_due(), where the probe looks.
+        with patch.object(coordination_module, "RELEASE_AUDIT_TIMEOUT_S", 5.0):
+            status, payload = state.enqueue_command(
+                "world_time_set",
+                {},
+                "server",
+                identity_payload=IDENTITY_PAYLOAD,
+                lease_token=lease["lease_token"],
+            )
         self.assertEqual((status, payload["error"]), (409, "lease_invalid"))
         self.assertEqual(observations, [True])
 

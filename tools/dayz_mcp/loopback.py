@@ -54,7 +54,6 @@ SERVER_COMMANDS = {
     "object_delete",
     "notify_players",
     "vehicle_enter",
-    "vehicle_drive",
     "scene_raycast",
     "telemetry_read",
     "query_get_in_condition",
@@ -77,7 +76,6 @@ CLIENT_COMMANDS = {
     "restore_gameplay",
     "key_press",
     "player_respawn",
-    "drive_probe_client",
     "vehicle_get_in_client",
     "engine_set",
     "vehicle_control",
@@ -91,6 +89,7 @@ CLIENT_COMMANDS = {
     "ui_focus",
     "ui_dialog",
     "action_use",
+    "action_use_target",
 }
 
 CREDENTIAL_RECOVERY_TTL_S = 300.0
@@ -114,7 +113,6 @@ _SCHEMALESS_COMMANDS = {
     "query_all_players",
     "world_spawn",
     "vehicle_enter",
-    "vehicle_drive",
     "scene_raycast",
     "telemetry_read",
     "query_get_in_condition",
@@ -122,7 +120,6 @@ _SCHEMALESS_COMMANDS = {
     "world_weather_set",
     "camera_set",
     "camera_get",
-    "drive_probe_client",
     "vehicle_get_in_client",
     "engine_set",
     "vehicle_control",
@@ -323,6 +320,23 @@ def _box_payload(state: "ServerState") -> dict:
     if "ports_in_use" not in occupancy:
         occupancy["ports_in_use"] = []
     return occupancy
+
+
+def _retired_run_diagnostics_payload(state: object, _client: ClientIdentity) -> object:
+    """Copy lifecycle retired-run diagnostics onto /session/status, or None."""
+    lifecycle = getattr(state, "lifecycle", None)
+    if lifecycle is None:
+        return None
+    reader = getattr(lifecycle, "retired_run_diagnostics", None)
+    if not callable(reader):
+        return None
+    try:
+        snap = reader()
+    except Exception:
+        return None
+    if not isinstance(snap, list):
+        return None
+    return snap
 
 
 def _safe_operation_timeout(value: object) -> tuple[float, bool]:
@@ -784,6 +798,18 @@ _COMMAND_ARG_SCHEMAS: dict[str, _CommandSchema] = {
                 "action": _is_non_empty_string,
                 "classname": _is_string,
                 "pos": _is_real_vector3,
+                "radius": _SAFE_RADIUS_200,
+            },
+        )
+    ),
+    "action_use_target": _command_schema(
+        _schema_variant(
+            required=("action", "target"),
+            optional=("classname", "radius"),
+            validators={
+                "action": _is_non_empty_string,
+                "target": _one_of("hands", "self"),
+                "classname": _is_string,
                 "radius": _SAFE_RADIUS_200,
             },
         )
@@ -3390,6 +3416,9 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 )
             payload["box"] = _box_payload(self.state)
+            payload["retired_run_diagnostics"] = _retired_run_diagnostics_payload(
+                self.state, client
+            )
 
         if action in {"acquire", "wait"} and status == 200:
             payload = self._adopt_on_grant(client, payload)

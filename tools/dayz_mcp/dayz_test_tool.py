@@ -1701,6 +1701,17 @@ def _wire_safe_generation(value: object) -> bool:
     )
 
 
+_DIAGNOSTIC_TOKEN = process_lifecycle._GENERATION_TOKEN
+
+
+def _wire_safe_diagnostic_token(value: object) -> bool:
+    """run_id/event/reason/decision on session_status retired-run rows."""
+    return (
+        isinstance(value, str)
+        and _DIAGNOSTIC_TOKEN.fullmatch(value) is not None
+    )
+
+
 def _validated_generation(source: object) -> dict[str, object] | None:
     if not isinstance(source, dict):
         return None
@@ -1725,18 +1736,42 @@ def _validated_generation(source: object) -> dict[str, object] | None:
 def _validated_diagnostic(item: object, run_id: str) -> dict[str, object] | None:
     if not isinstance(item, dict) or set(item) != set(_DIAGNOSTIC_FIELDS):
         return None
-    if item.get("run_id") != run_id or not isinstance(item.get("run_id"), str):
+    if item.get("run_id") != run_id or not _wire_safe_diagnostic_token(run_id):
         return None
     if item.get("state") != "EXITED":
         return None
     for key in ("event", "reason", "decision"):
-        value = item.get(key)
-        if not isinstance(value, str) or not value:
+        if not _wire_safe_diagnostic_token(item.get(key)):
             return None
     generations = _validated_generation(item)
     if generations is None:
         return None
     return {field: item[field] for field in _DIAGNOSTIC_FIELDS}
+
+
+_RUNS_RETIRED_RECENTLY_LIMIT = 16
+
+
+def _runs_retired_recently(raw: object) -> list[dict[str, object]] | None:
+    """Wire-safe retired-run list for session_status; None if unreadable."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return None
+    out: list[dict[str, object]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        run_id = item.get("run_id")
+        if not isinstance(run_id, str):
+            continue
+        validated = _validated_diagnostic(item, run_id)
+        if validated is None:
+            continue
+        out.append(validated)
+        if len(out) >= _RUNS_RETIRED_RECENTLY_LIMIT:
+            break
+    return out
 
 
 def _copy_generation(source: dict[str, object]) -> dict[str, object]:

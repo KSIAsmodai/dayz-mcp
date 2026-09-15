@@ -119,7 +119,13 @@ class SessionStatusBlockedOnTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(tool=name):
                 description = tools[name].description or ""
                 self.assertIn("120", description)
-                self.assertIn("renewal is internal", description)
+                self.assertIn("session_heartbeat", description)
+                self.assertNotIn("renewal is internal", description)
+                self.assertIn("session_status does not renew", description)
+                self.assertNotIn(
+                    "The lease renews while dayz-mcp calls keep coming",
+                    description,
+                )
 
 
 if __name__ == "__main__":
