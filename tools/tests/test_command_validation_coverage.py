@@ -85,6 +85,8 @@ def _minimal_args(cmd: str) -> dict:
         return {"kind": "acknowledge", "title": "t", "message": "m"}
     if cmd == "action_use":
         return {"action": "use"}
+    if cmd == "action_use_target":
+        return {"action": "use", "target": "hands"}
     if cmd == "exec_enforce":
         # Shape-only gate; allowlist/audit happen in _enqueue_exec_enforce.
         return {"expr": "allowed"}

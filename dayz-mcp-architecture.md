@@ -7,7 +7,7 @@
 > **Base:** 2 workflows de investigación (≈2.5M tokens) + spot-check directo de Claude sobre
 > cada API load-bearing (leídas en el source vanilla bajo `<vanilla scripts root>`).
 > Generado 2026-06-06 como documento de diseño. **Implementado y en produccion desde
-> entonces**: el servidor expone hoy 62 tools y el puente va por `MCP_BRIDGE_VERSION = "10"`.
+> entonces**: el servidor expone hoy 63 tools y el puente va por `MCP_BRIDGE_VERSION = "10"`.
 > Esto queda como el diseño original — util para entender por que las piezas son como son,
 > no como descripcion del estado actual. Para eso, `README.md` (superficie de tools) y el
 > bloque LIVE-STATE de `HANDOFF.md`.
@@ -122,7 +122,7 @@ Claude ──stdio/JSON-RPC──> MCP server (Python+FastMCP)
 
 ---
 
-## 4. Tool surface (62 tools (+ `exec_enforce` when an allowlist is configured))
+## 4. Tool surface (63 tools (+ `exec_enforce` when an allowlist is configured))
 
 El recuento sale de `tools/tests/test_install_mcp.py::PublicToolCountDocsTest`:
 `build_app` → `app._tool_manager.list_tools()`, sin descartar tools del número
@@ -138,7 +138,7 @@ Mapeadas a las APIs verificadas. 9 unguarded, 2 `DIAG`. (superficie inicial, 202
 
 - **session:** `session_connect` (Connect + OnClientNewEvent) · `session_status` (player listo?) · `session_disconnect`
 - **world:** `world_spawn` (CreateObjectEx) · `world_time_set` (SetDate/SetTimeMultiplier) · `world_weather_set` (WeatherPhenomenon)
-- **vehicle:** `vehicle_enter` (StartCommand_Vehicle) · `vehicle_drive` (Car.SetThrottle/SetSteering/SetBrake)
+- **vehicle:** `vehicle_enter` (StartCommand_Vehicle) · `vehicle_control` (client throttle/steer/brake)
 - **scene:** `scene_raycast` (DayZPhysics.RaycastRVProxy + GetCrosshairObject) — "ver" sin pixeles
 - **camera+capture:** `camera_set`/`camera_get` (SetCameraEx/GetCamera) · `capture_screenshot` (MakeScreenshot **o** window-grab fallback → PNG→base64 ImageContent — ver §6)
 - **exec (breakglass, `DIAG`):** `exec_enforce` (ExecuteEnforceScript) — **solo** para lo no mapeado, con whitelist
@@ -255,7 +255,7 @@ server-takeover. Por R6 (fail-closed), de salida:
 | Fase | Entrega | Esfuerzo | Desbloquea |
 |---|---|---|---|
 | **0. POC** ⭐ | round-trip **async no bloqueante** + readiness ACK, server-only: `query_player_state` → mod despacha por callback `RestApi` desde TickScheduler → devuelve posición con correlation-id | ~1 sem | de-risca lo crítico: transporte sin bloquear el tick + protocolo de readiness |
-| 1. Control | `world_spawn` + `vehicle_enter` (con `IsGettingIn`) + `vehicle_drive` | med | escenario + conducir sin input SO |
+| 1. Control | `world_spawn` + `vehicle_enter` (con `IsGettingIn`) | med | escenario + conducir sin input SO |
 | 2. Observación | `scene_raycast` + `telemetry_read` (verdict sin pixeles) | low | tests headless |
 | 3. Visual | cámara + `capture_screenshot` — **primero resolver MakeScreenshot vs window-grab** (ver §6); necesita cliente renderizado | med→alto | "ver" multi-ángulo |
 | 4. MCP completo | tool surface entera + security + packaging/install | med | el end-goal |

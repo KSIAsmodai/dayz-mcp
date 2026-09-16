@@ -21,7 +21,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping, TypeVar
 
-from dayz_mcp import dayz_test_storage
+from dayz_mcp import dayz_test_storage, window_close
 from dayz_mcp.instance_fence import BindingPrepareError
 from dayz_mcp.steam_launch_guard import Preparation
 from dayz_mcp.steam_prepare_supervisor import SteamPreparationGate
@@ -3393,6 +3393,147 @@ class ProcessLifecycle:
                 )
             finally:
                 self._finish_committed(authority, command_id)
+
+    def close_run(
+        self, client: ClientIdentity, token: str | None, run_id: object
+    ) -> dict[str, object]:
+        legacy_error = self._legacy_identity_error()
+        if legacy_error is not None:
+            return legacy_error
+        command = "lifecycle_close"
+        decision, error = self._authorize(client, token, command)
+        if error is not None:
+            return error
+        authority = self._authority(decision)
+        if authority is None:
+            return self._error("lease_required", 403)
+        committed = False
+        try:
+            with self._operation_lock:
+                if not self._reservation_active(authority, command):
+                    return self._error("lease_invalid", 409)
+                if self._quarantined():
+                    return self._reject_reserved(authority, command, "retail_quarantine")
+                if not isinstance(run_id, str) or not run_id:
+                    return self._reject_reserved(authority, command, "run_not_found", 404)
+                run = self.manifest.get(run_id)
+                if run is None:
+                    return self._reject_reserved(authority, command, "run_not_found", 404)
+                if (
+                    run.owner_session_id != client.session_id
+                    or run.owner_lease_id != authority[1]
+                    or run.state != "RUNNING"
+                ):
+                    return self._reject_reserved(authority, command, "run_not_adopted")
+                owned: list[ProcessRecord] = []
+                for record in run.processes:
+                    kind, reason = self._classify_registered_process(record)
+                    if kind == "owned":
+                        owned.append(record)
+                        continue
+                    if kind in {"gone", "foreign"}:
+                        continue
+                    return self._reject_reserved(
+                        authority,
+                        command,
+                        reason,
+                        503 if reason == "guard_unavailable" else 409,
+                    )
+                if self._quarantined():
+                    return self._reject_reserved(authority, command, "retail_quarantine")
+                rank = {"client": 0, "server": 1}
+                owned = [
+                    record
+                    for _index, record in sorted(
+                        enumerate(owned),
+                        key=lambda item: (rank.get(item[1].role, 2), item[0]),
+                    )
+                ]
+                if not self._audit(
+                    "lifecycle_close",
+                    client,
+                    "identity_match",
+                    "allowed",
+                    run_id=run_id,
+                    owned_pids=[record.pid for record in owned],
+                ):
+                    self.coordinator.reject_reservation(
+                        authority[0], authority[1], authority[2], "audit_failed"
+                    )
+                    return self._error("audit_failed", 503)
+                command_id = self._commit_reserved(authority, command)
+                if command_id is None:
+                    return self._error("lease_invalid", 409)
+                committed = True
+                try:
+                    fns = getattr(self, "window_fns", None)
+                    role_rows: dict[str, dict[str, object]] = {}
+                    for record in owned:
+                        windows = window_close.list_visible_top_level_windows(
+                            (record.pid,), fns=fns
+                        )
+                        windows_found = len(windows)
+                        windows_posted = 0
+                        for hwnd, window_pid in windows:
+                            kind, _reason = self._classify_registered_process(record)
+                            if kind != "owned":
+                                continue
+                            if window_close.post_wm_close(
+                                hwnd, fns=fns, expected_pid=record.pid
+                            ):
+                                windows_posted += 1
+                            _ = window_pid
+                        existing = role_rows.get(record.role)
+                        if existing is None:
+                            role_rows[record.role] = {
+                                "pid": record.pid,
+                                "windows_found": windows_found,
+                                "windows_posted": windows_posted,
+                            }
+                        else:
+                            existing["windows_found"] = (
+                                int(existing["windows_found"]) + windows_found
+                            )
+                            existing["windows_posted"] = (
+                                int(existing["windows_posted"]) + windows_posted
+                            )
+                    result: dict[str, object] = {"run_id": run_id}
+                    result.update(role_rows)
+                    return result
+                finally:
+                    self._finish_committed(authority, command_id)
+        except Exception:
+            # Unexpected exit after authorize opened a reservation: abort
+            # before commit (same collection as adopt_run); after commit the
+            # inner finally already finished the command.
+            result = self._error("close_failed", 503)
+            if not committed:
+                degraded: list[str] = []
+                try:
+                    degraded.extend(
+                        self.coordinator.abort_reservation(
+                            authority[0],
+                            authority[1],
+                            authority[2],
+                            "close_failed",
+                        )
+                    )
+                except Exception:
+                    try:
+                        rejected = self.coordinator.reject_reservation(
+                            authority[0],
+                            authority[1],
+                            authority[2],
+                            "close_failed",
+                        )
+                        extra = getattr(rejected, "cleanup_degraded", ())
+                        if extra:
+                            degraded.extend(extra)
+                    except Exception:
+                        degraded.append("reservation_abort_failed")
+                if degraded:
+                    result["cleanup_degraded"] = list(dict.fromkeys(degraded))
+            return result
 
     def adopt_run(self, client: ClientIdentity, token: str | None, run_id: object) -> dict[str, object]:
         legacy_error = self._legacy_identity_error()

@@ -1,7 +1,7 @@
 # DayZ-MCP
 
 **An MCP server that puts an agent's hands on a running DayZ: build a mod, launch the
-game, put the world into a state, act, and read back what the engine did — 62 typed
+game, put the world into a state, act, and read back what the engine did — 63 typed
 tools, server-authoritative, no keyboard, no OCR.**
 
 Two things fall out of that, and both are new for this game:
@@ -62,10 +62,10 @@ read back in `MissionServer`. No synthesised keystrokes, no OCR. The one excepti
 visual capture — `MakeScreenshot` is broken in the diag build (T165276), so frames
 come from an external window grab of the rendered client, which only reads pixels.
 
-**62 tools (+ `exec_enforce` when an allowlist is configured)** across world, player,
+**63 tools (+ `exec_enforce` when an allowlist is configured)** across world, player,
 vehicle, camera, telemetry, lifecycle, knowledge and session coordination:
 `action_use`, `bridge_status`, `camera_get`, `camera_set`, `capture_screenshot`,
-`dayz_knowledge_find`, `dayz_knowledge_prepare`, `dayz_knowledge_show`, `dayz_knowledge_status`, `dayz_test_run`, `dayz_test_stop`, `engine_set`, `entities_query`, `infected_drive`, `inventory_attach`, `inventory_give`, `key_press`,
+`dayz_knowledge_find`, `dayz_knowledge_prepare`, `dayz_knowledge_show`, `dayz_knowledge_status`, `dayz_test_close`, `dayz_test_run`, `dayz_test_stop`, `engine_set`, `entities_query`, `infected_drive`, `inventory_attach`, `inventory_give`, `key_press`,
 `lease_acquire`, `list_projects`, `logs_since`, `notify_players`, `object_anim`,
 `object_delete`, `object_inspect`, `pipeline_feedback`, `pipeline_inbox`,
 `pipeline_resolve`, `playbook_reload`, `playbook_run`, `player_respawn`, `player_teleport`, `query_all_players`, `query_get_in_condition`,

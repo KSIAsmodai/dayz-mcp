@@ -27,4 +27,15 @@ modded class MissionGameplay
 			bridge.OnTick(timeslice);
 		}
 	}
+
+	override void OnKeyPress(int key)
+	{
+		super.OnKeyPress(key);
+
+		MCPClientBridge bridge = MCPClientBridge.Get();
+		if (bridge)
+		{
+			bridge.OnMissionKeyPress(key);
+		}
+	}
 };

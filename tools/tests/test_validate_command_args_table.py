@@ -546,6 +546,31 @@ _COMMAND_CASES: dict[str, tuple[_Case, ...]] = {
             (True, None),
         ),
         (
+            "target_hands_rejected",
+            {"action": "open", "target": "hands"},
+            (False, "bad_args"),
+        ),
+        (
+            "target_self_rejected",
+            {"action": "open", "target": "self"},
+            (False, "bad_args"),
+        ),
+        (
+            "target_world_rejected",
+            {"action": "open", "target": "world"},
+            (False, "bad_args"),
+        ),
+        (
+            "bad_target",
+            {"action": "open", "target": "cursor"},
+            (False, "bad_args"),
+        ),
+        (
+            "target_not_string",
+            {"action": "open", "target": 1},
+            (False, "bad_args"),
+        ),
+        (
             "extra_key",
             {"action": "open", "extra": None},
             (False, "bad_args"),
@@ -554,6 +579,50 @@ _COMMAND_CASES: dict[str, tuple[_Case, ...]] = {
         (
             "radius_not_positive",
             {"action": "open", "radius": 0.0},
+            (False, "bad_args"),
+        ),
+    ),
+    "action_use_target": (
+        (
+            "valid_target_hands",
+            {"action": "open", "target": "hands"},
+            (True, None),
+        ),
+        (
+            "valid_target_self",
+            {"action": "open", "target": "self"},
+            (True, None),
+        ),
+        (
+            "valid_with_optional",
+            {
+                "action": "open",
+                "target": "hands",
+                "classname": "House",
+                "radius": 200.0,
+            },
+            (True, None),
+        ),
+        (
+            "world_rejected",
+            {"action": "open", "target": "world"},
+            (False, "bad_args"),
+        ),
+        (
+            "bad_target",
+            {"action": "open", "target": "cursor"},
+            (False, "bad_args"),
+        ),
+        (
+            "pos_rejected",
+            {"action": "open", "target": "hands", "pos": [1.0, 2.0, 3.0]},
+            (False, "bad_args"),
+        ),
+        ("missing_target", {"action": "open"}, (False, "bad_args")),
+        ("missing_action", {"target": "hands"}, (False, "bad_args")),
+        (
+            "extra_key",
+            {"action": "open", "target": "hands", "extra": None},
             (False, "bad_args"),
         ),
     ),
@@ -576,7 +645,6 @@ _SCHEMALESS_COMMANDS = (
     "query_all_players",
     "world_spawn",
     "vehicle_enter",
-    "vehicle_drive",
     "scene_raycast",
     "telemetry_read",
     "query_get_in_condition",
@@ -584,7 +652,6 @@ _SCHEMALESS_COMMANDS = (
     "world_weather_set",
     "camera_set",
     "camera_get",
-    "drive_probe_client",
     "vehicle_get_in_client",
     "engine_set",
     "vehicle_control",

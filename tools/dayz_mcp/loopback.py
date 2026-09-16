@@ -54,7 +54,6 @@ SERVER_COMMANDS = {
     "object_delete",
     "notify_players",
     "vehicle_enter",
-    "vehicle_drive",
     "scene_raycast",
     "telemetry_read",
     "query_get_in_condition",
@@ -77,7 +76,6 @@ CLIENT_COMMANDS = {
     "restore_gameplay",
     "key_press",
     "player_respawn",
-    "drive_probe_client",
     "vehicle_get_in_client",
     "engine_set",
     "vehicle_control",
@@ -91,6 +89,7 @@ CLIENT_COMMANDS = {
     "ui_focus",
     "ui_dialog",
     "action_use",
+    "action_use_target",
 }
 
 CREDENTIAL_RECOVERY_TTL_S = 300.0
@@ -114,7 +113,6 @@ _SCHEMALESS_COMMANDS = {
     "query_all_players",
     "world_spawn",
     "vehicle_enter",
-    "vehicle_drive",
     "scene_raycast",
     "telemetry_read",
     "query_get_in_condition",
@@ -122,7 +120,6 @@ _SCHEMALESS_COMMANDS = {
     "world_weather_set",
     "camera_set",
     "camera_get",
-    "drive_probe_client",
     "vehicle_get_in_client",
     "engine_set",
     "vehicle_control",
@@ -144,6 +141,7 @@ LIFECYCLE_ROUTES = {
     "/lifecycle/start": "start",
     "/lifecycle/ack": "ack",
     "/lifecycle/stop": "stop",
+    "/lifecycle/close": "close",
     "/lifecycle/adopt": "adopt",
     "/lifecycle/reap": "reap",
     "/lifecycle/status": "status",
@@ -801,6 +799,18 @@ _COMMAND_ARG_SCHEMAS: dict[str, _CommandSchema] = {
                 "action": _is_non_empty_string,
                 "classname": _is_string,
                 "pos": _is_real_vector3,
+                "radius": _SAFE_RADIUS_200,
+            },
+        )
+    ),
+    "action_use_target": _command_schema(
+        _schema_variant(
+            required=("action", "target"),
+            optional=("classname", "radius"),
+            validators={
+                "action": _is_non_empty_string,
+                "target": _one_of("hands", "self"),
+                "classname": _is_string,
                 "radius": _SAFE_RADIUS_200,
             },
         )
@@ -3474,6 +3484,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif action == "stop":
             result = lifecycle.stop_run(client, token, body.get("run_id"))
+        elif action == "close":
+            result = lifecycle.close_run(client, token, body.get("run_id"))
         elif action == "adopt":
             result = lifecycle.adopt_run(client, token, body.get("run_id"))
         elif action == "reap":

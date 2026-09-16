@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from dayz_mcp import loopback, server, session_coordination as coordination_module
 from dayz_mcp.runtime_state import CoordinationSnapshotStore, RuntimePaths
@@ -545,8 +546,15 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
     def test_concurrent_same_client_queue_acquire_is_one_durable_ticket(self) -> None:
         first_audit_entered = threading.Event()
         resume_first_audit = threading.Event()
+        second_waiting = threading.Event()
         queued_events: list[str] = []
         blocked_once = False
+
+        class WaitProbe(threading.Condition):
+            def wait(self, timeout: float | None = None) -> bool:
+                if threading.current_thread().name == "same-b":
+                    second_waiting.set()
+                return super().wait(timeout)
 
         def audit(event: dict[str, object]) -> bool:
             nonlocal blocked_once
@@ -558,7 +566,7 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
             ):
                 blocked_once = True
                 first_audit_entered.set()
-                resume_first_audit.wait(1.0)
+                resume_first_audit.wait(5.0)
             if event.get("event") == "session_queued":
                 queued_events.append(str(event.get("ticket")))
             return True
@@ -566,6 +574,7 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
         coordinator = SessionCoordinator(
             token_fn=Sequence("token"), id_fn=Sequence("lease"), audit=audit
         )
+        coordinator._condition = WaitProbe()
         coordinator.acquire(IDENTITY, "owner")
         results: list[tuple[int, dict]] = []
         threads = (
@@ -582,14 +591,21 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
                 ),
             ),
         )
-        threads[0].start()
-        self.assertTrue(first_audit_entered.wait(1.0))
-        threads[1].start()
-        threads[1].join(0.02)
-        self.assertTrue(threads[1].is_alive())
-        resume_first_audit.set()
-        for thread in threads:
-            thread.join(2.0)
+        # RELEASE_AUDIT_TIMEOUT_S bounds the same-client reservation wait (pinned by
+        # test_same_client_retry_is_bounded_while_first_audit_is_stuck). Widen it so
+        # the barriers, not scheduler latency, decide the outcome.
+        with patch.object(coordination_module, "RELEASE_AUDIT_TIMEOUT_S", 10.0):
+            threads[0].start()
+            try:
+                self.assertTrue(first_audit_entered.wait(1.0))
+                threads[1].start()
+                # same-a holds the audit gate: same-b can only wait on its reservation.
+                self.assertTrue(second_waiting.wait(2.0))
+            finally:
+                resume_first_audit.set()
+                for thread in threads:
+                    if thread.is_alive():
+                        thread.join(2.0)
 
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         self.assertEqual([status for status, _payload in results], [202, 202])
@@ -637,6 +653,16 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
     def test_same_client_retry_is_bounded_while_first_audit_is_stuck(self) -> None:
         entered = threading.Event()
         resume = threading.Event()
+        audit_left = threading.Event()
+        retry_thread = threading.current_thread()
+        retry_wait_timeouts: list[float | None] = []
+
+        class WaitProbe(threading.Condition):
+            def wait(self, timeout: float | None = None) -> bool:
+                # Once the first audit is stuck, the test thread only runs the retry.
+                if entered.is_set() and threading.current_thread() is retry_thread:
+                    retry_wait_timeouts.append(timeout)
+                return super().wait(timeout)
 
         def audit(event: dict[str, object]) -> bool:
             client = event.get("client") or {}
@@ -645,12 +671,16 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
                 and client.get("session") == IDENTITY_B.session_id[:12]
             ):
                 entered.set()
-                resume.wait(1.0)
+                # Stuck until the retry has answered; the timeout only ends a retry
+                # that waits for this audit instead of answering.
+                resume.wait(5.0)
+                audit_left.set()
             return True
 
         coordinator = SessionCoordinator(
             token_fn=Sequence("token"), id_fn=Sequence("lease"), audit=audit
         )
+        coordinator._condition = WaitProbe()
         coordinator.acquire(IDENTITY, "owner")
         first_result: list[tuple[int, dict]] = []
         first = threading.Thread(
@@ -660,17 +690,25 @@ class GrantLedgerLinearizationTest(unittest.TestCase):
         )
         first.start()
         self.assertTrue(entered.wait(1.0))
-        started_at = time.monotonic()
         try:
             retry_status, retry_payload = coordinator.acquire(IDENTITY_B, "same")
-            elapsed = time.monotonic() - started_at
+            answered_while_audit_stuck = not audit_left.is_set()
         finally:
             resume.set()
             first.join(2.0)
 
-        self.assertLess(elapsed, 0.20)
+        self.assertTrue(answered_while_audit_stuck)
         self.assertEqual(retry_status, 503)
         self.assertEqual(retry_payload["error"], "audit_failed")
+        # The bound is the timeout the reservation wait passes, not wall-clock time:
+        # scheduler latency delays the answer but cannot raise it. Every wait (none
+        # if the deadline passed before the first) stays within
+        # RELEASE_AUDIT_TIMEOUT_S, up to float rounding of deadline - now.
+        self.assertNotIn(None, retry_wait_timeouts)
+        self.assertLessEqual(
+            max(retry_wait_timeouts, default=0.0),
+            coordination_module.RELEASE_AUDIT_TIMEOUT_S + 1e-6,
+        )
         self.assertEqual(first_result[0][0], 202)
 
     def test_queue_fifo_follows_ticket_creation_not_audit_completion(self) -> None:
@@ -1447,7 +1485,7 @@ class StateLockIoBoundaryTest(unittest.TestCase):
             id_fn=Sequence("lease"),
             audit=audit,
             cleanup=lambda *_args: {},
-            cleanup_timeout_s=0.05,
+            cleanup_timeout_s=5.0,
         )
         state = loopback.ServerState(
             "key", time_fn=clock, coordination=coordinator
@@ -1465,13 +1503,17 @@ class StateLockIoBoundaryTest(unittest.TestCase):
 
         state.retail_probe = retail_probe
         _, lease = coordinator.acquire(IDENTITY, "commit-expiry")
-        status, payload = state.enqueue_command(
-            "world_time_set",
-            {},
-            "server",
-            identity_payload=IDENTITY_PAYLOAD,
-            lease_token=lease["lease_token"],
-        )
+        # Release audits are awaited for min(RELEASE_AUDIT_TIMEOUT_S, cleanup budget
+        # left) and may land after the call; widen both so session_expired is written
+        # while enqueue_command is still inside expire_due(), where the probe looks.
+        with patch.object(coordination_module, "RELEASE_AUDIT_TIMEOUT_S", 5.0):
+            status, payload = state.enqueue_command(
+                "world_time_set",
+                {},
+                "server",
+                identity_payload=IDENTITY_PAYLOAD,
+                lease_token=lease["lease_token"],
+            )
         self.assertEqual((status, payload["error"]), (409, "lease_invalid"))
         self.assertEqual(observations, [True])
 

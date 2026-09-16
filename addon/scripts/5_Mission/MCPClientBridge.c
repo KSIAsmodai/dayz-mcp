@@ -161,16 +161,11 @@ class MCPClientBridge extends MCPJobRunnerOwner
 	protected const float CAMERA_SEATED_POSE_EPS_M = 0.05;
 	protected const float DRIVE_CLIENT_TIMEOUT_S = 12.0;
 	protected const float DRIVE_CLIENT_PREP_TIMEOUT_S = 5.0;
-	protected const float DRIVE_CLIENT_DEFAULT_SAMPLE_S = 2.0;
-	protected const float DRIVE_CLIENT_MAX_SAMPLE_S = 5.0;
-	protected const float DRIVE_CLIENT_DEADMAN_S = 3.0;
 	protected const float VEHICLE_CONTROL_DEFAULT_TTL_S = 3.0;
 	protected const float VEHICLE_CONTROL_MAX_TTL_S = 30.0;
 	protected const float DRIVE_CLIENT_SEARCH_RADIUS = 4.0;
 	protected const int DRIVE_CLIENT_PHASE_PREP = 0;
 	protected const int DRIVE_CLIENT_PHASE_IGNITE = 1;
-	protected const int DRIVE_CLIENT_PHASE_DRIVE = 2;
-	protected const int DRIVE_CLIENT_PHASE_SAMPLE = 3;
 	protected const int DRIVE_CLIENT_PHASE_REPORT = 4;
 	protected const int UI_TREE_DEFAULT_LIMIT = 256;
 	protected const int UI_TREE_MAX_LIMIT = 512;
@@ -182,7 +177,7 @@ class MCPClientBridge extends MCPJobRunnerOwner
 	//! the tools it registers. Written as short literals joined with +, split at
 	//! commas (5_Mission\gui\chat\chatline.c:8): the longest single literal in
 	//! vanilla is 237 bytes and this census is longer than that.
-	protected const string CLIENT_POLL_CAPS = "action_use,camera_get,camera_set,drive_probe_client,engine_set,key_press,player_respawn," + "restore_gameplay,ui_click,ui_dialog,ui_focus,ui_reload_layout,ui_set_text,ui_tree," + "vehicle_control,vehicle_get_in_client,vehicle_release,vehicle_telemetry,vehicle_trace";
+	protected const string CLIENT_POLL_CAPS = "action_use,action_use_target,camera_get,camera_set,engine_set,key_press,player_respawn," + "restore_gameplay,ui_click,ui_dialog,ui_focus,ui_reload_layout,ui_set_text,ui_tree," + "vehicle_control,vehicle_get_in_client,vehicle_release,vehicle_telemetry,vehicle_trace";
 
 	protected static ref MCPClientBridge m_Instance;
 
@@ -279,6 +274,22 @@ class MCPClientBridge extends MCPJobRunnerOwner
 			m_Instance.Shutdown();
 			m_Instance = null;
 		}
+	}
+
+	void OnMissionKeyPress(int key)
+	{
+		if (!m_Dialog)
+		{
+			return;
+		}
+
+		if (!m_Dialog.IsOpen())
+		{
+			return;
+		}
+
+		Log("OnKeyPress key=" + key);
+		m_Dialog.TryCancelFromKey(key, m_JobRunner.GetElapsedS());
 	}
 
 	void OnTick(float timeslice)
@@ -777,10 +788,6 @@ class MCPClientBridge extends MCPJobRunnerOwner
 		{
 			postNow = DispatchPlayerRespawn(command, result);
 		}
-		else if (command.cmd == "drive_probe_client")
-		{
-			postNow = DispatchDriveProbeClient(command, result);
-		}
 		else if (command.cmd == "vehicle_get_in_client")
 		{
 			postNow = DispatchVehicleGetInClient(command, result);
@@ -826,6 +833,10 @@ class MCPClientBridge extends MCPJobRunnerOwner
 			postNow = DispatchUiFocus(command, result);
 		}
 		else if (command.cmd == "action_use")
+		{
+			postNow = DispatchActionUse(command, result);
+		}
+		else if (command.cmd == "action_use_target")
 		{
 			postNow = DispatchActionUse(command, result);
 		}
@@ -961,64 +972,6 @@ class MCPClientBridge extends MCPJobRunnerOwner
 		result.ok = true;
 		result.camera = BuildCameraResult(mode);
 		return true;
-	}
-
-	protected bool DispatchDriveProbeClient(MCPCommand command, MCPResult result)
-	{
-		float sampleSTarget = DRIVE_CLIENT_DEFAULT_SAMPLE_S;
-		float throttle = 1.0;
-		if (command.args)
-		{
-			if (command.args.throttle < 0.0 || command.args.throttle > 1.0 || !IsFiniteFloat(command.args.throttle))
-			{
-				result.ok = false;
-				result.error = "bad_throttle";
-				return true;
-			}
-
-			if (command.args.throttle > 0.0)
-			{
-				throttle = command.args.throttle;
-			}
-
-			if (command.args.duration < 0.0 || command.args.duration > DRIVE_CLIENT_MAX_SAMPLE_S || !IsFiniteFloat(command.args.duration))
-			{
-				result.ok = false;
-				result.error = "bad_duration";
-				return true;
-			}
-
-			if (command.args.duration > 0.0)
-			{
-				sampleSTarget = command.args.duration;
-			}
-
-			command.args.throttle = throttle;
-		}
-
-		if (HasExclusiveJob())
-		{
-			result.ok = false;
-			result.error = "busy";
-			return true;
-		}
-
-		MCPJob job = new MCPJob();
-		job.id = command.id;
-		job.kind = "drive_probe_client";
-		job.args = command.args;
-		job.phase = DRIVE_CLIENT_PHASE_PREP;
-		job.sample_s_target = sampleSTarget;
-		job.deadline_s = m_JobRunner.GetElapsedS() + DRIVE_CLIENT_TIMEOUT_S;
-		job.prep_deadline_s = m_JobRunner.GetElapsedS() + DRIVE_CLIENT_PREP_TIMEOUT_S;
-		job.net_strategy = -1;
-		job.tick_poll_sent = result.tick_poll_sent;
-		job.tick_poll_callback = result.tick_poll_callback;
-		job.tick_dispatch = result.tick_dispatch;
-		m_JobRunner.AddJob(job);
-
-		Log("client job queued id=" + job.id + " kind=drive_probe_client deadline_s=" + job.deadline_s);
-		return false;
 	}
 
 	protected bool DispatchVehicleGetInClient(MCPCommand command, MCPResult result)
@@ -2045,10 +1998,11 @@ class MCPClientBridge extends MCPJobRunnerOwner
 
 		result.action = action.Type().ToString();
 
-		vector searchPos;
-		if (command.args.pos && command.args.pos.Count() > 0)
+		string targetMode;
+		if (command.cmd == "action_use_target")
 		{
-			if (!ArrayToVector(command.args.pos, searchPos))
+			targetMode = command.args.target;
+			if (targetMode != "hands" && targetMode != "self")
 			{
 				result.ok = false;
 				result.error = "bad_args";
@@ -2057,35 +2011,95 @@ class MCPClientBridge extends MCPJobRunnerOwner
 		}
 		else
 		{
-			searchPos = player.GetPosition();
+			if (command.args.target != "" && command.args.target != "world")
+			{
+				result.ok = false;
+				result.error = "bad_args";
+				return true;
+			}
+
+			targetMode = "world";
 		}
 
-		float searchRadius = ACTION_USE_DEFAULT_RADIUS;
-		if (command.args.radius > 0.0 && IsFiniteFloat(command.args.radius))
+		result.target = targetMode;
+
+		ActionTarget actionTarget;
+		if (targetMode == "hands")
 		{
-			searchRadius = command.args.radius;
-		}
+			ItemBase targetItem = player.GetItemInHands();
+			if (!targetItem)
+			{
+				result.ok = false;
+				result.error = "no_item_in_hands";
+				return true;
+			}
 
-		string classFilter = command.args.classname;
-		Object targetObj = FindNearestObjectNearClient(searchPos, searchRadius, classFilter, player);
-		if (!targetObj)
+			if (command.args.classname != "" && targetItem.GetType() != command.args.classname)
+			{
+				result.ok = false;
+				result.error = "held_item_mismatch";
+				return true;
+			}
+
+			ItemBase targetParent = ItemBase.Cast(targetItem.GetHierarchyParent());
+			actionTarget = new ActionTarget(targetItem, targetParent, -1, vector.Zero, -1);
+			result.classname = targetItem.GetType();
+			result.pos_real = new array<float>();
+			VectorToArray(targetItem.GetPosition(), result.pos_real);
+			result.distance = vector.Distance(player.GetPosition(), targetItem.GetPosition());
+		}
+		else if (targetMode == "self")
 		{
-			result.ok = false;
-			result.error = "target_not_found";
-			return true;
+			actionTarget = new ActionTarget(null, null, -1, vector.Zero, -1);
+			result.classname = "";
+			result.pos_real = new array<float>();
+			VectorToArray(player.GetPosition(), result.pos_real);
+			result.distance = 0.0;
 		}
+		else
+		{
+			vector searchPos;
+			if (command.args.pos && command.args.pos.Count() > 0)
+			{
+				if (!ArrayToVector(command.args.pos, searchPos))
+				{
+					result.ok = false;
+					result.error = "bad_args";
+					return true;
+				}
+			}
+			else
+			{
+				searchPos = player.GetPosition();
+			}
 
-		// cursorHitPos must be a real point on the target. CCTCursor.Can
-		// measures DistanceSq from GetCursorHitPos (cctcursor.c:30-33).
-		// ForceTarget writes vector.Zero (actionmanagerclient.c:466), which
-		// is ~10 km from the player on Chernarus and always fails.
-		vector cursorHitPos = targetObj.GetPosition();
-		ActionTarget actionTarget = new ActionTarget(targetObj, null, -1, cursorHitPos, 0);
+			float searchRadius = ACTION_USE_DEFAULT_RADIUS;
+			if (command.args.radius > 0.0 && IsFiniteFloat(command.args.radius))
+			{
+				searchRadius = command.args.radius;
+			}
 
-		result.classname = targetObj.GetType();
-		result.pos_real = new array<float>();
-		VectorToArray(cursorHitPos, result.pos_real);
-		result.distance = vector.Distance(player.GetPosition(), cursorHitPos);
+			string classFilter = command.args.classname;
+			Object targetObj = FindNearestObjectNearClient(searchPos, searchRadius, classFilter, player);
+			if (!targetObj)
+			{
+				result.ok = false;
+				result.error = "target_not_found";
+				return true;
+			}
+
+			// cursorHitPos must be a real point on the target. CCTCursor.Can
+			// measures DistanceSq from GetCursorHitPos (cctcursor.c:30-33).
+			// ForceTarget writes vector.Zero (actionmanagerclient.c:466), which
+			// is ~10 km from the player on Chernarus and always fails.
+			vector cursorHitPos = targetObj.GetPosition();
+			actionTarget = new ActionTarget(targetObj, null, -1, cursorHitPos, 0);
+
+			result.classname = targetObj.GetType();
+			result.pos_real = new array<float>();
+			VectorToArray(cursorHitPos, result.pos_real);
+			result.distance = vector.Distance(player.GetPosition(), cursorHitPos);
+		}
 
 		if (amc.GetRunningAction() != null)
 		{
@@ -2689,10 +2703,6 @@ class MCPClientBridge extends MCPJobRunnerOwner
 		{
 			return ProcessCameraSetJob(job);
 		}
-		else if (job.kind == "drive_probe_client")
-		{
-			return ProcessDriveProbeClientJob(job);
-		}
 		else if (job.kind == "vehicle_get_in")
 		{
 			return ProcessVehicleGetInClientJob(job);
@@ -2762,33 +2772,6 @@ class MCPClientBridge extends MCPJobRunnerOwner
 			return false;
 		}
 
-		return true;
-	}
-
-	protected bool ProcessDriveProbeClientJob(MCPJob job)
-	{
-		if (job.phase == DRIVE_CLIENT_PHASE_PREP)
-		{
-			return ProcessDriveProbeClientPrep(job);
-		}
-		else if (job.phase == DRIVE_CLIENT_PHASE_IGNITE)
-		{
-			return ProcessDriveProbeClientIgnite(job);
-		}
-		else if (job.phase == DRIVE_CLIENT_PHASE_DRIVE)
-		{
-			return ProcessDriveProbeClientDrive(job);
-		}
-		else if (job.phase == DRIVE_CLIENT_PHASE_SAMPLE)
-		{
-			return ProcessDriveProbeClientSample(job);
-		}
-		else if (job.phase == DRIVE_CLIENT_PHASE_REPORT)
-		{
-			return true;
-		}
-
-		job.error = "bad_probe_phase";
 		return true;
 	}
 
@@ -3226,89 +3209,6 @@ class MCPClientBridge extends MCPJobRunnerOwner
 		return false;
 	}
 
-	protected bool ProcessDriveProbeClientIgnite(MCPJob job)
-	{
-		CarScript car = CarScript.Cast(job.subject);
-		if (!car)
-		{
-			job.error = "no_vehicle";
-			return true;
-		}
-
-		car.EngineStart();
-		job.engine_on_server = car.EngineIsOn();
-		job.phase = DRIVE_CLIENT_PHASE_DRIVE;
-		return false;
-	}
-
-	protected bool ProcessDriveProbeClientDrive(MCPJob job)
-	{
-		CarScript car = CarScript.Cast(job.subject);
-		if (!car)
-		{
-			job.error = "no_vehicle";
-			return true;
-		}
-
-		float throttle = GetDriveProbeClientThrottle(job);
-
-		MCPCarDrive.Set(car, throttle, 0.0, 0.0, 0.0, GetGame().GetTickTime() + DRIVE_CLIENT_DEADMAN_S);
-
-		job.start_pos = car.GetPosition();
-		job.sample_start_s = m_JobRunner.GetElapsedS();
-		job.speedo_max = 0.0;
-		job.pos_delta = 0.0;
-		CaptureDriveProbeClientOwnership(job, car);
-		job.phase = DRIVE_CLIENT_PHASE_SAMPLE;
-		return false;
-	}
-
-	protected bool ProcessDriveProbeClientSample(MCPJob job)
-	{
-		CarScript car = CarScript.Cast(job.subject);
-		if (!car)
-		{
-			job.error = "no_vehicle";
-			return true;
-		}
-
-		float throttle = GetDriveProbeClientThrottle(job);
-		MCPCarDrive.Set(car, throttle, 0.0, 0.0, 0.0, GetGame().GetTickTime() + DRIVE_CLIENT_DEADMAN_S);
-
-		if (car.EngineIsOn())
-		{
-			job.engine_on_server = true;
-		}
-
-		float speed = car.GetSpeedometer();
-		if (speed > job.speedo_max)
-		{
-			job.speedo_max = speed;
-		}
-
-		vector delta = car.GetPosition() - job.start_pos;
-		job.pos_delta = delta.Length();
-		CaptureDriveProbeClientOwnership(job, car);
-
-		if (m_JobRunner.GetElapsedS() - job.sample_start_s >= job.sample_s_target)
-		{
-			job.phase = DRIVE_CLIENT_PHASE_REPORT;
-			return true;
-		}
-
-		return false;
-	}
-
-	protected float GetDriveProbeClientThrottle(MCPJob job)
-	{
-		if (job && job.args && job.args.throttle > 0.0)
-		{
-			return job.args.throttle;
-		}
-
-		return 1.0;
-	}
-
 	protected void CaptureDriveProbeClientOwnership(MCPJob job, CarScript car)
 	{
 		if (!job || !car)
@@ -3534,29 +3434,6 @@ class MCPClientBridge extends MCPJobRunnerOwner
 			PostResult(result);
 		}
 
-		if (job.kind == "drive_probe_client")
-		{
-			MCPResult resultDrive = new MCPResult();
-			resultDrive.id = job.id;
-			resultDrive.ok = true;
-			resultDrive.vehicle_fixture_ready = job.vehicle_fixture_ready;
-			resultDrive.engine_on_server = job.engine_on_server;
-			resultDrive.speedo_max = job.speedo_max;
-			resultDrive.pos_delta = job.pos_delta;
-			resultDrive.net_strategy = job.net_strategy;
-			resultDrive.is_owner = job.is_owner;
-			resultDrive.is_authority_owner = job.is_authority_owner;
-			resultDrive.owner_identity = job.owner_identity;
-			resultDrive.net_id_low = job.net_id_low;
-			resultDrive.net_id_high = job.net_id_high;
-			resultDrive.tick_poll_sent = job.tick_poll_sent;
-			resultDrive.tick_poll_callback = job.tick_poll_callback;
-			resultDrive.tick_dispatch = job.tick_dispatch;
-			PostResult(resultDrive);
-			MCPCarDrive.Clear();
-			RestoreGameplay();
-		}
-
 		if (job.kind == "vehicle_get_in")
 		{
 			PlayerBase getInPlayer;
@@ -3611,12 +3488,6 @@ class MCPClientBridge extends MCPJobRunnerOwner
 
 	override void MCP_PostJobFailure(MCPJob job)
 	{
-		if (job && job.kind == "drive_probe_client")
-		{
-			MCPCarDrive.Clear();
-			RestoreGameplay();
-		}
-
 		if (job && job.kind == "ui_dialog")
 		{
 			if (m_Dialog && m_Dialog.IsOpen())
@@ -3645,12 +3516,6 @@ class MCPClientBridge extends MCPJobRunnerOwner
 
 	override void MCP_PostJobTimeout(MCPJob job)
 	{
-		if (job && job.kind == "drive_probe_client")
-		{
-			MCPCarDrive.Clear();
-			RestoreGameplay();
-		}
-
 		if (!job)
 		{
 			return;
