@@ -6,6 +6,7 @@ import inspect
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -18,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, Awaitable, Callable, Iterator, Literal
 
+import anyio
 from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field, StrictBool, StrictFloat, StrictInt, StrictStr
@@ -67,7 +69,11 @@ from dayz_mcp.process_lifecycle import (
 )
 from dayz_mcp import session_handoff
 from dayz_mcp.mcp_supervisor import Supervisor
-from dayz_mcp.session_coordination import ClientIdentity, command_requires_lease
+from dayz_mcp.session_coordination import (
+    SESSION_TTL_S,
+    ClientIdentity,
+    command_requires_lease,
+)
 from dayz_mcp.vehicle_trace import normalize_bridge_result, normalize_request
 
 # Import the production lazy closures before freezing their source baseline.
@@ -3343,6 +3349,12 @@ def _parse_wait_for_box_s(value: object) -> float:
     return converted
 
 
+def _parse_on_busy(value: object) -> str:
+    if value not in {"fail", "queue"}:
+        raise ToolError("bad_args: on_busy must be 'fail' or 'queue'")
+    return str(value)
+
+
 def _parse_client_start_budget_s(value: object) -> float | None:
     """Validate the startup budget at the WIRE, which is where the frontier is.
 
@@ -3392,6 +3404,12 @@ def _box_from_status(status: object) -> dict[str, Any]:
     return payload
 
 
+def _box_session_is(session: object, session_id: str) -> bool:
+    if not isinstance(session, str) or not isinstance(session_id, str):
+        return False
+    return session in {session_id, session_id[:12]}
+
+
 def _box_head_is(box: dict[str, Any], session_id: str) -> bool:
     queue = box.get("queue")
     if not isinstance(queue, list) or not queue:
@@ -3399,14 +3417,233 @@ def _box_head_is(box: dict[str, Any], session_id: str) -> bool:
     head = queue[0]
     if not isinstance(head, dict):
         return False
-    session = head.get("session")
-    return session in {session_id, session_id[:12]}
+    return _box_session_is(head.get("session"), session_id)
 
 
 def _box_ready_for(box: dict[str, Any], session_id: str) -> bool:
     if box.get("occupied") is True:
         return False
     return _box_head_is(box, session_id)
+
+
+_BOX_OFFER_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_BOX_OFFER_MOD = re.compile(r"[A-Za-z0-9@ _.+-]{1,64}")
+_BOX_OFFER_STATES = frozenset({
+    "STARTING",
+    "RUNNING",
+    "RUNNING_IDLE",
+    "STOPPING",
+    "UNRECONCILED",
+})
+_BOX_OFFER_MOD_CAP = 16
+
+
+def _offer_run_id(value: object) -> str | None:
+    if isinstance(value, str) and _BOX_OFFER_RUN_ID.fullmatch(value):
+        return value
+    return None
+
+
+def _offer_state(value: object) -> str | None:
+    if isinstance(value, str) and value in _BOX_OFFER_STATES:
+        return value
+    return None
+
+
+def _offer_port(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535:
+        return value
+    return None
+
+
+def _offer_age_s(value: object) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _offer_mods(raw: object) -> list[str]:
+    if isinstance(raw, str):
+        items: list[object] = [raw]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        return []
+    kept: list[str] = []
+    for item in items:
+        if not isinstance(item, str) or not item:
+            continue
+        if item[0] == " " or item[-1] == " ":
+            continue
+        if _BOX_OFFER_MOD.fullmatch(item) is None:
+            continue
+        kept.append(item)
+        if len(kept) >= _BOX_OFFER_MOD_CAP:
+            break
+    return kept
+
+
+def _first_box_dict(items: object) -> dict[str, Any] | None:
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if isinstance(item, dict):
+            return item
+    return None
+
+
+def _finite_box_age_s(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    age = float(value)
+    if not math.isfinite(age):
+        return None
+    return age
+
+
+def _ownerless_idle_age_s(run: dict[str, Any]) -> float | None:
+    age = _finite_box_age_s(run.get("last_activity_age_s"))
+    if age is not None:
+        return age
+    return _finite_box_age_s(run.get("age_s"))
+
+
+def _box_wait_cannot_help(
+    box: object,
+    caller_session: str | None = None,
+    port: int | None = None,
+) -> str | None:
+    """Return a reason when waiting in the FIFO cannot free the box."""
+
+    if not isinstance(box, dict):
+        return None
+    if box.get("port_scan_known") is False:
+        return "port_scan_unknown"
+    session_id = caller_session if isinstance(caller_session, str) else ""
+    runs = box.get("runs")
+    if isinstance(runs, list) and session_id:
+        for occupier in runs:
+            if (
+                isinstance(occupier, dict)
+                and occupier.get("state") in {"RUNNING", "RUNNING_IDLE"}
+                and _box_session_is(occupier.get("owner_session"), session_id)
+            ):
+                return "own_run"
+    if box_available_for(box)["adopt"] is True:
+        # Keep waiting on a young ownerless idle run (the FIFO head's
+        # fresh launch). Adopt only after it has been idle a full session TTL.
+        idle = _ownerless_idle_runs(box)
+        if len(idle) == 1:
+            age = _ownerless_idle_age_s(idle[0])
+            if age is not None and age >= SESSION_TTL_S:
+                return "adopt"
+    if isinstance(runs, list):
+        for item in runs:
+            if isinstance(item, dict) and item.get("state") == "UNRECONCILED":
+                return "unreconciled"
+    if _port_conflict_fields(box, port).get("reason") == "port_in_use_foreign":
+        return "port_in_use_foreign"
+    return None
+
+
+def _occupant_from_box(box: dict[str, Any]) -> tuple[dict[str, Any], float | None]:
+    run = _first_box_dict(box.get("runs"))
+    if run is not None:
+        mods_raw: object = run.get("mods")
+        if not isinstance(mods_raw, list):
+            mods_raw = run.get("mod")
+        occupant = {
+            "run_id": _offer_run_id(run.get("run_id")),
+            "state": _offer_state(run.get("state")),
+            "foreign": False,
+            "port": _offer_port(run.get("port")),
+            "mods": _offer_mods(mods_raw),
+        }
+        return occupant, _offer_age_s(run.get("age_s"))
+    foreign = _first_box_dict(box.get("foreign"))
+    if foreign is not None:
+        occupant = {
+            "run_id": _offer_run_id(foreign.get("run_id")),
+            "state": _offer_state(foreign.get("state")),
+            "foreign": True,
+            "port": _offer_port(foreign.get("port")),
+            "mods": _offer_mods(foreign.get("mods")),
+        }
+        return occupant, _offer_age_s(foreign.get("age_s"))
+    occupant = {
+        "run_id": None,
+        "state": None,
+        "foreign": False,
+        "port": None,
+        "mods": [],
+    }
+    return occupant, _offer_age_s(box.get("claimed_s"))
+
+
+def _box_queue_position(box: dict[str, Any], session_id: str) -> int | None:
+    queue = box.get("queue")
+    if not isinstance(queue, list) or not session_id:
+        return None
+    for index, item in enumerate(queue):
+        if isinstance(item, dict) and _box_session_is(item.get("session"), session_id):
+            return index + 1
+    return None
+
+
+def _box_queue_offer(
+    box: object,
+    *,
+    caller_session: str | None = None,
+    port: int | None = None,
+) -> dict[str, Any] | None:
+    """Actionable FIFO offer for a busy-box rejection or session_status."""
+
+    if not isinstance(box, dict):
+        return None
+    session_id = caller_session if isinstance(caller_session, str) else ""
+    wait_reason = _box_wait_cannot_help(
+        box, caller_session=session_id or None, port=port
+    )
+    if wait_reason is not None and wait_reason != "own_run":
+        return None
+    if _port_conflict_fields(box, port).get("reason") == "port_in_use_foreign":
+        return None
+    waiters = 0
+    queue = box.get("queue")
+    if isinstance(queue, list):
+        for item in queue:
+            session = item.get("session") if isinstance(item, dict) else None
+            if _box_session_is(session, session_id):
+                continue
+            waiters += 1
+    occupant, age_s = _occupant_from_box(box)
+    retry: dict[str, Any] = {
+        "tool": "dayz_test_run",
+        "same_args": True,
+    }
+    if wait_reason != "own_run":
+        retry["on_busy"] = "queue"
+    return {
+        "position_if_joined": waiters + 1,
+        "waiters": waiters,
+        "occupant": occupant,
+        "occupant_age_s": age_s,
+        "retry": retry,
+    }
+
+
+def _attach_queue_offer(
+    payload: dict[str, Any],
+    box: object,
+    *,
+    caller_session: str | None = None,
+    port: int | None = None,
+) -> dict[str, Any]:
+    if payload.get("error_code") in {"active_run_exists", TAKEOVER_REQUIRED}:
+        payload["queue_offer"] = _box_queue_offer(
+            box, caller_session=caller_session, port=port
+        )
+    return payload
 
 
 def _port_conflict_fields(box: object, port: int | None) -> dict[str, Any]:
@@ -3487,7 +3724,12 @@ def _enrich_active_run_result(
     payload["run_id"] = None
     payload["status"] = "failed"
     payload["error_code"] = "active_run_exists"
-    return _apply_takeover_required(payload, box, caller_session=caller_session)
+    return _attach_queue_offer(
+        _apply_takeover_required(payload, box, caller_session=caller_session),
+        box,
+        caller_session=caller_session,
+        port=port,
+    )
 
 
 def _failed_active_run_result(
@@ -3501,23 +3743,28 @@ def _failed_active_run_result(
 ) -> dict[str, Any]:
     extra = occupancy_error_fields(box, caller_session=caller_session)
     extra.update(_port_conflict_fields(box, port))
-    return _apply_takeover_required(
-        {
-            "status": "failed",
-            "project": project,
-            "mode": mode,
-            "run_id": None,
-            "phase": "executing",
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "artifacts_paths": [],
-            "error_code": "active_run_exists",
-            "cleanup_degraded": False,
-            "server_alive": None,
-            "client_alive": None,
-            **extra,
-        },
+    return _attach_queue_offer(
+        _apply_takeover_required(
+            {
+                "status": "failed",
+                "project": project,
+                "mode": mode,
+                "run_id": None,
+                "phase": "executing",
+                "elapsed_s": round(time.monotonic() - started, 3),
+                "artifacts_paths": [],
+                "error_code": "active_run_exists",
+                "cleanup_degraded": False,
+                "server_alive": None,
+                "client_alive": None,
+                **extra,
+            },
+            box,
+            caller_session=caller_session,
+        ),
         box,
         caller_session=caller_session,
+        port=port,
     )
 
 
@@ -3573,32 +3820,59 @@ async def _heartbeat_box_claim(
             continue
 
 
+async def _release_box_wait_ticket(client: Any, ticket: str | None) -> None:
+    """Leave the box FIFO even if the MCP request CancelScope is cancelled.
+
+    Must not take ``tool_lock``: a sibling can hold that lock for a
+    bridge timeout or a whole wait, and the leave only needs to reach
+    the daemon, same as the claim heartbeat. ``ticket`` None is
+    leave-session. A stuck daemon is bounded so shielded cleanup
+    cannot hang the tool.
+    """
+
+    with anyio.CancelScope(shield=True):
+        with anyio.move_on_after(5):
+            try:
+                await client.session_box_status(done=True, ticket=ticket)
+            except Exception:
+                pass
+
+
 async def execute_wait_for_box(
     client: Any,
     wait_s: float,
     *,
     sleep_fn: Callable[[float], Awaitable[None]] | None = None,
     time_fn: Callable[[], float] | None = None,
-    poll_interval_s: float = BOX_WAIT_POLL_S,
+    poll_interval_s: float | None = None,
+    abort_if: Callable[[dict[str, Any]], object] | None = None,
 ) -> dict[str, Any]:
     """Wait until the box is free and this waiter is FIFO head.
 
     Probes under ``tool_lock`` and sleeps outside it, same rule as
     ``wait_for`` / ``ui_dialog``. Does not take a lease and does not
-    require the caller to heartbeat.
+    require the caller to heartbeat. ``abort_if`` is checked after
+    every status read; a truthy result ends the wait like a timeout
+    (the caller still holds the ticket to leave the FIFO).
     """
 
     sleeper = sleep_fn or asyncio.sleep
     clock = time_fn or time.monotonic
-    poll = max(float(poll_interval_s), BOX_WAIT_MIN_POLL_S)
+    interval = BOX_WAIT_POLL_S if poll_interval_s is None else poll_interval_s
+    poll = max(float(interval), BOX_WAIT_MIN_POLL_S)
     deadline = clock() + float(wait_s)
     ticket: str | None = None
     box = empty_box(occupied=True)
     session_id = str(getattr(getattr(client, "identity", None), "session_id", "") or "")
+    join_task: asyncio.Task[Any] | None = None
     try:
         while True:
+            wait_error = None
             async with client.tool_lock:
-                status = await client.session_box_status(wait=True, ticket=ticket)
+                join_task = asyncio.create_task(
+                    client.session_box_status(wait=True, ticket=ticket)
+                )
+                status = await asyncio.shield(join_task)
             if isinstance(status, dict):
                 box = _box_from_status(status)
                 next_ticket = status.get("box_ticket")
@@ -3626,6 +3900,17 @@ async def execute_wait_for_box(
                     "box": box,
                     "error": "box_queue_saturated",
                 }
+            if abort_if is not None:
+                reason = abort_if(box)
+                if reason:
+                    payload: dict[str, Any] = {
+                        "ok": False,
+                        "ticket": ticket,
+                        "box": box,
+                    }
+                    if isinstance(reason, str):
+                        payload["error"] = reason
+                    return payload
             ready = (
                 isinstance(ticket, str)
                 and ticket
@@ -3634,23 +3919,46 @@ async def execute_wait_for_box(
             )
             if ready:
                 async with client.tool_lock:
-                    claimed = await client.session_box_status(
-                        wait=True, ticket=ticket, claim=True
+                    join_task = asyncio.create_task(
+                        client.session_box_status(
+                            wait=True, ticket=ticket, claim=True
+                        )
                     )
+                    claimed = await asyncio.shield(join_task)
+                holds_claim = True
                 if isinstance(claimed, dict):
                     box = _box_from_status(claimed)
-                return {"ok": True, "ticket": ticket, "box": box}
+                    holds_claim = claimed.get("box_claimed") is not False
+                if holds_claim:
+                    return {"ok": True, "ticket": ticket, "box": box}
             remaining = deadline - clock()
             if remaining <= 0.0:
                 return {"ok": False, "ticket": ticket, "box": box}
             await sleeper(min(poll, remaining))
     except BaseException:
-        if ticket:
-            try:
-                async with client.tool_lock:
+        with anyio.CancelScope(shield=True):
+            started = time.monotonic()
+            with anyio.move_on_after(5):
+                if join_task is not None and (
+                    ticket is None or join_task.done()
+                ):
+                    try:
+                        status = await join_task
+                    except (Exception, asyncio.CancelledError):
+                        status = None
+                    else:
+                        if isinstance(status, dict):
+                            next_ticket = status.get("box_ticket")
+                            if isinstance(next_ticket, str) and next_ticket:
+                                ticket = next_ticket
+            leftover = 5.0 - (time.monotonic() - started)
+            with anyio.move_on_after(leftover if leftover > 0.0 else 0.05):
+                try:
                     await client.session_box_status(done=True, ticket=ticket)
-            except Exception:
-                pass
+                except Exception:
+                    pass
+            if join_task is not None and not join_task.done():
+                join_task.cancel()
         raise
 
 
@@ -3795,7 +4103,7 @@ def _session_status_blocked_on(status: dict[str, Any]) -> str | None:
         return ADOPT_BLOCKED_ON
     if isinstance(box, dict) and box.get("occupied") is True:
         return (
-            "DayZ test box; next: call dayz_test_run(..., wait_for_box_s=<n>) "
+            'DayZ test box; next: call dayz_test_run(..., on_busy="queue") '
             "to join the box FIFO"
         )
     return None
@@ -4040,6 +4348,17 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             if isinstance(box, dict):
                 box = dict(box)
                 box["available_for"] = box_available_for(box)
+                caller_session = str(
+                    getattr(getattr(client, "identity", None), "session_id", "") or ""
+                )
+                position = _box_queue_position(box, caller_session)
+                box["queue_position"] = position
+                if position is None and box.get("occupied") is True:
+                    box["queue_offer"] = _box_queue_offer(
+                        box, caller_session=caller_session
+                    )
+                else:
+                    box["queue_offer"] = None
                 status["box"] = box
             status["blocked_on"] = _session_status_blocked_on(status)
             _attach_runs_retired_recently(status)
@@ -4084,7 +4403,10 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "server_mods does not satisfy that gate. "
             "wait_for_box_s>0 waits "
             "until session_status.box is free (FIFO, no tool_lock while "
-            "sleeping). A DayZ server holding a game port counts as an "
+            "sleeping). on_busy=\"queue\" waits in that FIFO (wait_for_box_s "
+            "when >0, else the 600s cap) instead of failing at once; busy "
+            "rejections include queue_offer, or null when waiting cannot help. "
+            "A DayZ server holding a game port counts as an "
             "occupied box even without a run record, and a launch onto a "
             "port held by a process that is not ours is refused "
             "(active_run_exists; reason port_in_use_foreign names the port) "
@@ -4131,6 +4453,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         auto_remediate_steam: StrictBool = False,
         takeover: StrictBool = False,
         client_start_budget_s: StrictFloat | StrictInt | None = None,
+        on_busy: StrictStr = "fail",
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         caller_stale = await _observe_caller_tool_registry_stale(
@@ -4145,6 +4468,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         # come back as box_queue_saturated with its real defect never reported.
         budget_s = _parse_client_start_budget_s(client_start_budget_s)
         wait_s = _parse_wait_for_box_s(wait_for_box_s)
+        on_busy = _parse_on_busy(on_busy)
         client = _client_runtime()
         started = time.monotonic()
         box_ticket: str | None = None
@@ -4159,9 +4483,41 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                 return _box_from_status(await client.session_status())
 
         try:
-            if wait_s > 0.0:
+            if on_busy == "queue":
+                peeked = await peek_box()
+                cannot = _box_wait_cannot_help(
+                    peeked, caller_session=caller_session, port=port
+                )
+                if cannot is not None:
+                    failed = _failed_active_run_result(
+                        project=project,
+                        mode=mode,
+                        box=peeked,
+                        started=started,
+                        caller_session=caller_session,
+                        port=port,
+                    )
+                    if peeked.get("port_scan_known") is False:
+                        failed["error_code"] = "port_scan_unknown"
+                    if cannot in {"own_run", "adopt"}:
+                        failed["reason"] = cannot
+                    return annotated(failed)
+            if on_busy == "queue" or wait_s > 0.0:
                 await report("queued", "waiting for box")
-                waited = await execute_wait_for_box(client, wait_s)
+                wait_budget = wait_s
+                abort = None
+                if on_busy == "queue":
+                    wait_budget = wait_s if wait_s > 0.0 else BOX_WAIT_MAX_S
+                    session_for_wait = caller_session
+
+                    def abort(box: dict[str, Any]) -> object:
+                        return _box_wait_cannot_help(
+                            box, caller_session=session_for_wait, port=port
+                        )
+
+                waited = await execute_wait_for_box(
+                    client, wait_budget, abort_if=abort
+                )
                 ticket = waited.get("ticket")
                 box_ticket = ticket if isinstance(ticket, str) else None
                 if not waited.get("ok"):
@@ -4173,11 +4529,14 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                         caller_session=caller_session,
                         port=port,
                     )
-                    if waited.get("error") == "port_scan_unknown":
+                    wait_error = waited.get("error")
+                    if wait_error == "port_scan_unknown":
                         failed["error_code"] = "port_scan_unknown"
-                    if waited.get("error") == "box_queue_saturated":
+                    if wait_error == "box_queue_saturated":
                         failed["error_code"] = "box_queue_saturated"
                         failed["hint"] = "retry with wait_for_box_s=<n>"
+                    if wait_error in {"own_run", "adopt"}:
+                        failed["reason"] = wait_error
                     return annotated(failed)
                 if box_ticket:
                     claim_task = asyncio.create_task(
@@ -4301,12 +4660,8 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                     await claim_task
                 except (asyncio.CancelledError, Exception):
                     pass
-            if box_ticket:
-                try:
-                    async with client.tool_lock:
-                        await client.session_box_status(done=True, ticket=box_ticket)
-                except Exception:
-                    pass
+            if isinstance(box_ticket, str) and box_ticket:
+                await _release_box_wait_ticket(client, box_ticket)
 
     @app.tool(
         description=(
