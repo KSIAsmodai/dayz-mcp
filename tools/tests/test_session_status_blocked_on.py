@@ -23,7 +23,7 @@ LEASE_BLOCKED_ON = (
     "to join the lease FIFO"
 )
 BOX_BLOCKED_ON = (
-    "DayZ test box; next: call dayz_test_run(..., wait_for_box_s=<n>) "
+    'DayZ test box; next: call dayz_test_run(..., on_busy="queue") '
     "to join the box FIFO"
 )
 

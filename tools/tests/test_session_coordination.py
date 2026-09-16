@@ -1069,5 +1069,78 @@ class SessionCoordinatorTest(unittest.TestCase):
         self.assertIn(queued["ticket"], serialized)
 
 
+class BoxNoneReleaseTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.now = 0.0
+        self.seq = 0
+
+        def next_id() -> str:
+            self.seq += 1
+            return f"ticket-{self.seq}"
+
+        self.coordinator = SessionCoordinator(
+            time_fn=lambda: self.now,
+            id_fn=next_id,
+            token_fn=lambda: "unused",
+        )
+
+    def test_2223_r3b_none_release_keeps_a_sibling_ticket_and_claim(self) -> None:
+        owner = _identity("L")
+        try:
+            first = self.coordinator.box_wait_touch(owner)
+            second = self.coordinator.box_wait_touch(owner)
+            claimed = self.coordinator.box_wait_touch(
+                owner, first["box_ticket"], claim=True
+            )
+        except Exception as exc:
+            self.fail(f"product raised {type(exc).__name__}: {exc}")
+        self.assertTrue(claimed.get("box_claimed"))
+        self.assertEqual(first.get("box_ticket"), "ticket-1")
+        self.assertEqual(second.get("box_ticket"), "ticket-2")
+        self.assertEqual(len(self.coordinator.box_queue_public()), 2)
+        try:
+            self.coordinator.box_wait_touch(owner, done=True)
+        except Exception as exc:
+            self.fail(f"product raised {type(exc).__name__}: {exc}")
+        queue = self.coordinator.box_queue_public()
+        self.assertEqual(len(queue), 2)
+        self.assertTrue(self.coordinator.box_is_claimed())
+        try:
+            kept_first = self.coordinator.box_wait_touch(owner, "ticket-1")
+            kept_second = self.coordinator.box_wait_touch(owner, "ticket-2")
+        except Exception as exc:
+            self.fail(f"product raised {type(exc).__name__}: {exc}")
+        self.assertEqual(kept_first.get("box_ticket"), "ticket-1")
+        self.assertEqual(kept_second.get("box_ticket"), "ticket-2")
+        self.assertTrue(kept_first.get("box_claimed"))
+
+    def test_none_release_leaves_session_when_it_holds_no_other_ticket(self) -> None:
+        owner = _identity("L")
+        try:
+            joined = self.coordinator.box_wait_touch(owner)
+            self.coordinator.box_wait_touch(owner, done=True)
+        except Exception as exc:
+            self.fail(f"product raised {type(exc).__name__}: {exc}")
+        self.assertTrue(joined.get("box_ticket"))
+        self.assertEqual(self.coordinator.box_queue_public(), [])
+        self.assertFalse(self.coordinator.box_is_claimed())
+
+    def test_2223_r4_box_claimed_is_true_only_for_the_claiming_ticket(self) -> None:
+        owner = _identity("L")
+        try:
+            first = self.coordinator.box_wait_touch(owner)
+            second = self.coordinator.box_wait_touch(owner)
+            claimed = self.coordinator.box_wait_touch(
+                owner, first["box_ticket"], claim=True
+            )
+            kept_second = self.coordinator.box_wait_touch(
+                owner, second["box_ticket"]
+            )
+        except Exception as exc:
+            self.fail(f"product raised {type(exc).__name__}: {exc}")
+        self.assertTrue(claimed.get("box_claimed"))
+        self.assertFalse(kept_second.get("box_claimed"))
+
+
 if __name__ == "__main__":
     unittest.main()

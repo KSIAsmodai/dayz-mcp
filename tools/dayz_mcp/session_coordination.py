@@ -266,6 +266,7 @@ class SessionCoordinator:
         self._box_tombstones: dict[tuple[str, str], float] = {}
         self._box_claiming: str | None = None
         self._box_claimed_at: float | None = None
+        self._box_claiming_ticket: str | None = None
         self._invalid_tokens: dict[str, tuple[ClientIdentity, str]] = {}
         self._revision = 0
         self._cleanup_worker_slots = threading.BoundedSemaphore(
@@ -1930,12 +1931,16 @@ class SessionCoordinator:
             if done:
                 self._box_leave_locked(client, ticket_id)
                 return {"box_ticket": None}
-            existing = self._box_ticket_for_client_locked(client)
             supplied = ticket_id if isinstance(ticket_id, str) and ticket_id else None
             if supplied is not None and self._box_tombstoned_locked(
                 client.session_id, supplied
             ):
                 return {"box_ticket": None, "box_wait_error": "box_wait_cancelled"}
+            existing = (
+                self._box_ticket_id_locked(client, supplied)
+                if supplied is not None
+                else None
+            )
             if existing is None:
                 if supplied is not None:
                     return {"box_ticket": None, "box_wait_error": "box_ticket_invalid"}
@@ -1965,10 +1970,14 @@ class SessionCoordinator:
                 if self._box_claiming != client.session_id:
                     self._box_claimed_at = self._time_fn()
                 self._box_claiming = client.session_id
+                self._box_claiming_ticket = existing.ticket_id
             return {
                 "box_ticket": existing.ticket_id,
                 "box_position": self._box_queue.index(existing) + 1,
-                "box_claimed": self._box_claiming == client.session_id,
+                "box_claimed": (
+                    self._box_claiming == client.session_id
+                    and self._box_claiming_ticket == existing.ticket_id
+                ),
             }
 
     def durable_revision(self) -> int:
@@ -3022,15 +3031,17 @@ class SessionCoordinator:
             changed = True
         kept: list[_Ticket] = []
         for ticket in self._box_queue:
-            claimed = self._box_claiming == ticket.client.session_id
+            claimed = (
+                self._box_claiming == ticket.client.session_id
+                and self._box_claiming_ticket == ticket.ticket_id
+            )
             ttl = BOX_CLAIM_TTL_S if claimed else SESSION_TTL_S
             if now - ticket.touched_at >= ttl:
                 self._box_tombstones[(ticket.client.session_id, ticket.ticket_id)] = (
                     now + OPERATION_TOMBSTONE_TTL_S
                 )
                 if claimed:
-                    self._box_claiming = None
-                    self._box_claimed_at = None
+                    self._box_clear_claim_locked()
                 changed = True
                 continue
             kept.append(ticket)
@@ -3050,6 +3061,22 @@ class SessionCoordinator:
                 return ticket
         return None
 
+    def _box_ticket_id_locked(
+        self, client: ClientIdentity, ticket_id: str
+    ) -> _Ticket | None:
+        for ticket in self._box_queue:
+            if (
+                ticket.ticket_id == ticket_id
+                and ticket.client.session_id == client.session_id
+            ):
+                return ticket
+        return None
+
+    def _box_clear_claim_locked(self) -> None:
+        self._box_claiming = None
+        self._box_claimed_at = None
+        self._box_claiming_ticket = None
+
     def _box_leave_session_locked(self, session_id: str) -> None:
         now = self._time_fn()
         remaining: list[_Ticket] = []
@@ -3063,8 +3090,7 @@ class SessionCoordinator:
                 continue
             remaining.append(ticket)
         if self._box_claiming == session_id:
-            self._box_claiming = None
-            self._box_claimed_at = None
+            self._box_clear_claim_locked()
             removed = True
         if removed:
             self._box_queue = remaining
@@ -3073,6 +3099,19 @@ class SessionCoordinator:
 
     def _box_leave_locked(self, client: ClientIdentity, ticket_id: object) -> None:
         if ticket_id in (None, ""):
+            # A live ticket of this session that is a sibling's is left
+            # alone. A single unclaimed one is treated as this request's
+            # own unseen join and swept.
+            live = 0
+            for ticket in self._box_queue:
+                if ticket.client.session_id == client.session_id:
+                    live += 1
+                    if live > 1:
+                        break
+            if live > 1 or (
+                live > 0 and self._box_claiming == client.session_id
+            ):
+                return
             self._box_leave_session_locked(client.session_id)
             return
         now = self._time_fn()
@@ -3092,9 +3131,13 @@ class SessionCoordinator:
                 removed = True
                 continue
             remaining.append(ticket)
-        if self._box_claiming == client.session_id:
-            self._box_claiming = None
-            self._box_claimed_at = None
+        if (
+            isinstance(ticket_id, str)
+            and ticket_id
+            and self._box_claiming == client.session_id
+            and self._box_claiming_ticket == ticket_id
+        ):
+            self._box_clear_claim_locked()
             removed = True
         if removed:
             self._box_queue = remaining
