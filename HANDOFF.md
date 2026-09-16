@@ -1,55 +1,60 @@
 # HANDOFF — DayZ-MCP
 
 <!-- LIVE-STATE:START -->
-# DayZ-MCP — Estado vivo · snapshot 2026-09-15 (tras verificar #57 in-game)
+# DayZ-MCP — Estado vivo · snapshot 2026-09-16 (tras la promoción 5)
 
-**Última verificación real:** 2026-09-15 12:55.
-- **Árbol vivo `P:\DayZ_MCP_dev`:** `main` en `6096446` (#57, de otra línea de trabajo: arreglos de `bcd8`, `ba70`, `7ad1` y `81f3`).
-- **Daemon:** generación `baa46ba4…`, `daemon_modules.stale=[]`. Caja vacía al cerrar.
-- **PBO desplegado:** `EB62B4E7…` (254861 B), empaquetado sin binarizar desde un export limpio de `addon/` en `6096446`. Sus 13 entradas son idénticas a git y no lleva ninguna ajena. Copia del anterior: `DayZ_MCP.pbo.bak_pre_pr57_20260915` (`7DE421C5`).
-- **Launcher nativo:** reconstruido tras #57 con el OK del dueño. PE `67D974AF…`, igual en las 3 compilaciones; registro `1CBC9ED4…`.
+**Última verificación real:** 2026-09-16 12:52.
+- **Árbol vivo `P:\DayZ_MCP_dev`:** `main` en `1737dc5`, en sync con origin. Entra la Ola A entera: cierre ordenado del run, cola de la caja con `on_busy="queue"`, `action_use` con `target`, ESC cancelando `ui_dialog` y la retirada de `vehicle_drive` y `drive_probe_client`.
+- **Daemon:** generación `c7ee586e…`, `daemon_modules.stale=[]`, doctor `DAEMON_STATUS_OK`. Ahora **parado** por su vigía de inactividad (`idle 3631s >= 3600s`); arranca en diferido con la próxima llamada, ya sobre este árbol.
+- **PBO desplegado:** `1E79BF80…` (243617 B), empaquetado desde `1737dc5`. Sus 13 entradas dan `exact` contra ese commit y no lleva ninguna ajena. Copia del anterior: `DayZ_MCP.pbo.bak_pre_promote5_20260916` (`EB62B4E7…`, 254861 B).
+- **Launcher nativo:** sin tocar desde #57 (PE `67D974AF…`, registro `1CBC9ED4…`). Ningún módulo embebido cambió en esta ola: el gate de módulos sellados lo comprobó en cada ficha.
+- **Verificado en juego tras la promoción:** compila limpio en cliente y servidor (0 `Can't compile`, solo las 8 líneas `SCRIPT (E)` conocidas), el censo de capacidades da `match` y prueba que el PBO nuevo está cargado, `action_use` arranca `ActionDrink` con `target="hands"` y `target="self"`, y un run adoptado sobrevive a 160 s de pausa con heartbeats.
+- **Sin verificar todavía, para el próximo ciclo:** ESC cancelando el diálogo con teclas físicas, `dayz_test_close` grácil, el ratón libre al aparecer la ventana (`f298`) y la cola con dos sesiones. Requieren reabrir un cliente MCP: el catálogo de una sesión abierta antes de la promoción no trae las tools ni los parámetros nuevos, y recargar el worker no lo refresca.
 
 bugs: tracker = buzón `pipeline_inbox` · **29** abiertas (censo 2026-09-15 12:53: 30 + 4 nuevas − 5 resueltas) · toque 2026-09-15
 ciclos_en_este_objetivo: 1 (triaje del buzón + promociones + Ola 1 + 160e y delegables + Ola 2 + verificación de #57)
 
 ## Estado actual
 
-- **#57 verificado in-game** en el run `0be29aea`, con un solo coche (D-74):
-  - **`bcd8`:** `pack-addon.ps1` pasa `-packonly` y empaqueta aunque haya un `config.cpp` roto bajo `P:\`. Resuelta.
-  - **`ba70`:** `capture_screenshot` funciona sin workaround con el `PSModulePath` heredado. Resuelta.
-  - **`7ad1`:** `vehicle_release` sin `stop` previo vuelca la traza (`stop_reason=vehicle_release`). Resuelta.
-  - **`81f3`:** `player_teleport` del jugador sentado devuelve `occupant_client_seated` sin desincronizar. Resuelta.
-- **Encontrado al verificar:**
-  - **Launcher sin resellar (`de68`, resuelta):** #57 cambió un módulo que va embebido en el launcher, y ningún `dayz_test_run` lanzaba, en ninguna sesión, hasta reconstruirlo. Repite `1025`, cuya guarda sigue pendiente.
-  - **`63c9`:** con `-packonly`, AddonBuilder ignora `include.lst`, y el pack por defecto mete en el PBO los `.bak_*` y el `CLAUDE.md` de `P:\DayZ_MCP`. Empaquetar desde un export limpio.
-  - **`1004`:** `object_delete` del coche con el cliente sentado deja el render del cliente en negro, aunque las descripciones de #57 lo recomienden.
-  - **`f298` (medida en `fade`):** una sonda pasiva no ve el cursor confinado; los procesos DayZ toman el foco 1-2,5 s al arrancar y el join no lo cambia. Falta la confirmación del dueño.
-- **Trampas vigentes al conducir el MCP:** un coche por run; `stop` antes de `release`; heartbeat en pausas de más de 120 s (`d85b`); resellar el launcher si cambia un módulo empaquetado.
+- **Ola A cerrada y promocionada.** Ocho PR fusionados entre el 15 y el 16 y llevados a vivo en la promoción 5: el
+  cierre ordenado de un run (`dayz_test_close` y `close_run` en el daemon), la fase 1 de la cola de la caja
+  (`on_busy="queue"`, `queue_offer` y `queue_position` en `session_status.box`), `action_use` con `target` world, hands
+  o self, ESC cancelando un `ui_dialog` abierto, la retirada de `vehicle_drive` y `drive_probe_client`, el empaquetado
+  desde un export limpio y el resto de la ola.
+- **Lo que la ola endureció por auditoría, no por petición:** la limpieza de la cola tras cancelar una petición y la
+  propiedad del claim de la caja. Ahora el claim recuerda su ticket, solo se informa `box_claimed` a ese ticket, una
+  liberación sin id no toca el ticket de otra petición viva de la misma sesión, y una espera termina en cuanto el
+  puerto pedido lo ocupa un proceso ajeno.
+- **Resto conocido y aceptado:** una liberación que no llegó a conocer su ticket no puede nombrar lo que deshace, así
+  que el daemon lo deduce de lo que tiene la sesión; y la entrada `on_busy="fail"` no consulta el claim por ticket. Los
+  dos se cierran con un marcador por petición en el wire, que es cambio propio porque toca el fichero que lo parsea.
+- **Trampas vigentes al conducir el MCP:** un coche por run; `stop` antes de `release`; heartbeat en pausas de más de
+  120 s (`d85b`); resellar el launcher si cambia un módulo empaquetado; y **reabrir el cliente MCP después de una
+  promoción**, porque su catálogo de tools no se refresca al recargar el worker.
 
 ## Tickets
 
 GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido del buzón en commits). El tracker real es el buzón (`pipeline_inbox` / `pipeline_feedback` / `pipeline_resolve`) en `%LOCALAPPDATA%\DayZ_MCP\inbox\feedback.jsonl`, con ids `fb-AAAAMMDD-HHMMSS-xxxx` citados por sufijo.
 
 - **Resueltas al verificar #57:** `bcd8`, `ba70`, `7ad1`, `81f3` y `de68`. Puntero local de evidencia, sin versionar: `reviews/post57-2026-09-15/EVIDENCE.md`.
-- **Nuevas:** `de68` (ya resuelta), `63c9`, `1004` y `fade`.
-- **Abiertas con resto:**
-  - `f47b` (HOLD), `b0d9` y `f298`;
-  - `3bb4`;
-  - `1025`: la guarda contra módulos empaquetados sin resellar;
-  - `e4be`, `88ef` y `305a`;
-  - `d85b` y `ba11`;
-  - `7ef2`, `dff2` y `6d18`.
+- **Con código ya en vivo, pendientes de cerrar en el buzón tras el próximo ciclo in-game:** `3fc1`/`dce1` y el C1 de
+  `d85b` (verificados el 16 tras la promoción), la mitad de empaquetado de `63c9`, y `3bb4`, `f298`, `8604`/`2edd` y
+  `2223`, que esperan las comprobaciones que quedaron sin hacer. Se cierran en una sola pasada, no a medias.
+- **Abiertas con resto:** `f47b` (HOLD), `b0d9`, `1004`, `1025` (la guarda contra módulos empaquetados sin resellar),
+  `e4be`, `88ef`, `305a`, `ba11`, `7ef2`, `dff2` y `6d18`.
 
 ## Próxima acción
 
-1. **Sin juego:**
-   - `63c9`: que `pack-addon.ps1` empaquete desde un staging filtrado por `include.lst`;
+1. **Con el dueño delante, en un solo ciclo corto y con un cliente MCP reabierto:** ESC cancelando el diálogo con
+   teclas físicas (`3bb4`), `dayz_test_close` grácil con su línea de terminación por rol (`8604`), el ratón libre al
+   aparecer la ventana (`f298`) y `on_busy="queue"` con dos sesiones (`2223`). Después, cerrar el buzón de una pasada.
+2. **Sin juego:**
+   - el marcador por petición en el wire, que cierra el resto de la cola de la caja;
    - `1004`: corregir la descripción, o que `object_delete` rechace el coche con ocupante de cliente;
    - la guarda de `1025`;
    - `e4be`, `88ef` y `305a`, los P2 3-5 de la review de `deb9`, `d85b` y `ba11`.
-2. **`f47b`:** encontrar la causa del congelado y un detector que no dependa de la captura. El dueño lo confirma a la vista.
-3. **Con el dueño delante:** `f298` (el ratón al entrar), con la sonda de `fade`.
-4. **Decisiones de dueño pendientes:** modelo de cola `2223`, parada ordenada `8604`, `8bc6`, PARO/PARK (`3fc1`/`dce1`/`1025`, `2edd`-1, `dae1`-1/2) y BUG-069.
+3. **`f47b`:** encontrar la causa del congelado y un detector que no dependa de la captura. El dueño lo confirma a la vista.
+4. **Decisiones de dueño pendientes:** `8bc6`, PARO/PARK (`dae1`-1/2) y BUG-069.
 
 ## Invariantes CERRADAS — NO retocar / NO reabrir sin ángulo nuevo
 
@@ -63,6 +68,12 @@ GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido 
 - **Retención de copias de manifest (`160e`):** se conservan las 200 más nuevas y las que nombra el puntero o un fault. No se borra nada si el puntero o un fault son ilegibles o si una entrada no se puede clasificar. La ventana TOCTOU del unlink por ruta es un límite aceptado (D-72, `e4be`).
 - **`deb9` y `07a1`:** verificados in-game con el PBO `7DE421C5` (D-73).
 - **`bcd8`, `ba70`, `7ad1` y `81f3`:** verificados in-game con el PBO `EB62B4E7` (D-74).
+- **El árbol vivo solo avanza en una promoción controlada**, y el PBO entra con su Python, no después. El 16 alguien lo
+  adelantó fuera de promoción y dejó Python nuevo contra un PBO viejo; la promoción 5 lo realineó. Para trabajar, un
+  worktree desechable.
+- **`3fc1` verificado in-game con el PBO `1E79BF80`:** `action_use` arranca `ActionDrink` con `target="hands"` sobre el
+  objeto en manos y con `target="self"`, y el eco del target coincide. El censo de capacidades del cliente es la prueba
+  de qué PBO está cargado.
 
 ## Punteros (detalle)
 
@@ -73,10 +84,13 @@ GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido 
 - Evidencia de la verificación de #57 (traza, logs, procedencia de los dos empaquetados, launcher y sonda de `f298`): `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-15-post57\`
 - Sesiones: `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-15-dayzmcp-ola2.md` y `C:\Users\guill\ObsidianVault\AI\30_Sessions\2026-09-15-dayzmcp-post57.md`
 - Runbook de promoción a vivo: `C:\Users\guill\ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-14-delegables\promote3\RUNBOOK.md`
+- Evidencia del pleno (una carpeta por ficha, gates, auditorías, reviews y la promoción 5, con manifiesto sha256):
+  `ObsidianVault\AI\10_Projects\DayZ_MCP\reviews\2026-09-15-pleno-tickets\`
+- Punto de entrada para retomarlo: `ObsidianVault\AI\30_Sessions\2026-09-16-HANDOFF-pleno-receptor.md`
 - Histórico pre-v1.2: [`HANDOFF-ARCHIVE.md`](HANDOFF-ARCHIVE.md)
 - `NEXT-SESSION-PROMPT.txt` es de **22-ago** y está **obsoleto**. No usarlo.
 
-**Gate de arranque:** `Retomo DayZ-MCP desde: #57 verificado in-game (bcd8/ba70/7ad1/81f3 resueltas; PBO EB62B4E7, launcher resellado) · 29 fichas abiertas · próxima acción: 63c9, 1004 y guarda de 1025 sin juego; f47b`
+**Gate de arranque:** `Retomo DayZ-MCP desde: Ola A promocionada (main 1737dc5, daemon c7ee586e, PBO 1E79BF80 desde ese commit) · próxima acción: reabrir el cliente MCP y un ciclo corto para ESC, dayz_test_close, f298 y la cola con dos sesiones; luego cerrar el buzón de una pasada`
 <!-- LIVE-STATE:END -->
 
 ---
@@ -87,12 +101,12 @@ GitHub `willy92wins/dayz-mcp` (**público**: nada de rutas locales ni contenido 
 |---|---|---|
 | `P:\DayZ_MCP` | Addon compilable (`$PBOPREFIX$=DayZ_MCP`). **Sin `.git`.** | Bytes del bridge alineados con **`main`**. |
 | `P:\DayZ_MCP_dev` | Repo de producto (Python MCP, plans, reviews, este HANDOFF). `addon/` es la copia git del bridge. | Git `https://github.com/willy92wins/dayz-mcp.git`. HEAD local = `main` (tracking `origin/main`, ff desde inbox `6de5d98` = PR #17). **Inbox no mergeada.** `HANDOFF.md` entra en este commit. Untracked leftovers (backups, dumps de reviews, `NEXT-SESSION-PROMPT.txt`) se conservan y no se publican. |
-| `P:\Mods\@DayZ_MCP\Addons\DayZ_MCP.pbo` | PBO desplegado | SHA-256 `F82CFA8C4E557FFF0041661EC106DB6CF0ACA96C664515518DCC8459511E92AE` |
+| `…\!Workshop\@DayZ_MCP\Addons\DayZ_MCP.pbo` | PBO desplegado | SHA-256 `1E79BF80EADE48C98BB318A96C7F4ECF73F8782EC3AD3DDD08045B7751F98C9B` (2026-09-16, desde `1737dc5`) |
 | `C:\Users\guill\Repos\dayz-mcp` | Otro clone | Rancio. No usarlo como checkout. Rama local `fichas/hands-watchdog` (**13c, no está en main**). |
 
 Empaquetar desde `DayZ_MCP` o desde `DayZ_MCP_dev\addon` en este checkout pilla el bridge de `main`.
 
-La rama `work/inbox-20260830-modules` @ `6de5d98` sigue en local/remoto, 22 commits detrás; no usarla como checkout. El vault sigue con los D1-1/D1-4 del 10-sep; no son un plan activo.
+Las ramas de trabajo ya fusionadas se retiraron el 2026-09-16: el remoto se queda solo con `main`, y en local sobreviven las que sujeta un worktree vivo y tres con commits sin fusionar. Ningún commit se pierde —todos siguen alcanzables desde `main` y desde sus PR—, y el registro con nombre y sha de cada una queda fuera del repo, junto a la evidencia de la ola. El vault sigue con los D1-1/D1-4 del 10-sep; no son un plan activo.
 
 ## Cola aparcada (PARK / PARO)
 
