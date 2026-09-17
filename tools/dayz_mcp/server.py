@@ -51,6 +51,11 @@ from dayz_mcp.effective_schema_core import project_server_config_identity
 from dayz_mcp.tool_registry_fingerprint import capture_registry_snapshot
 from dayz_mcp.knowledge import register_knowledge_tools
 from dayz_mcp.occupant_seat import occupant_client_seated
+from dayz_mcp.peer_liveness import (
+    PEER_STALE_S,
+    client_peer_probeable as _client_peer_probeable,
+    peer_is_live as _peer_is_live,
+)
 from dayz_mcp.server_freshness import (
     REMEDIATION as _TOOL_REGISTRY_REMEDIATION,
     ServerSourceWatch,
@@ -172,8 +177,6 @@ DAEMON_AUTOSPAWN_ALREADY = (
     "daemon_unavailable: autospawn already attempted (start the daemon "
     "or omit --no-daemon-autospawn)"
 )
-# A peer with last_poll_age_s >= this value is not live (game polls ~0.2s).
-PEER_STALE_S = 15.0
 # Published ready.reason set. The bridge_status description derives its list
 # from this set plus _FENCE_BLOCK_READY.values() at build time and declares it
 # OPEN: consumers validate by shape, never against a copied whitelist.
@@ -517,19 +520,12 @@ _FENCE_BLOCK_READY = {
 }
 
 
-def _peer_is_live(peer: object) -> bool:
-    if not isinstance(peer, dict):
+async def _runtime_client_peer_probeable(runtime: Any) -> bool:
+    try:
+        status = await runtime.bridge_status_payload()
+    except Exception:
         return False
-    bind = peer.get("binding_state")
-    if bind == "LEGACY_UNBOUND":
-        return False
-    if bind in {None, ""}:
-        age = peer.get("last_poll_age_s")
-    elif bind != "BOUND":
-        return False
-    else:
-        age = peer.get("bound_last_poll_age_s")
-    return isinstance(age, (int, float)) and not isinstance(age, bool) and age < PEER_STALE_S
+    return _client_peer_probeable(status)
 
 
 def compute_bridge_ready(status: dict[str, Any]) -> dict[str, Any]:
@@ -4894,7 +4890,11 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
     @app.tool(
         description=(
             "Requires a lease (session_acquire_wait). Delete an object "
-            "previously returned by world_spawn.object_id. Returns ok with "
+            "previously returned by world_spawn.object_id. object_id is "
+            "session-scoped and does not survive the run — keep the spawn id "
+            "in this session; there is no pos+type delete. Deleting a seated "
+            "transport after vehicle_get_in_client needs care (sanctioned "
+            "teardown; it ejects). Returns ok with "
             "deleted=0 (success, nothing removed) when the id is unknown or "
             "already gone — check the `deleted` field to know whether anything "
             "was actually removed."
@@ -5219,7 +5219,13 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "occupant_client_seated when the player is a client-owned seated "
             "occupant (vehicle_get_in_client): teleporting that transport "
             "desyncs client and server. One car per run — there is no get-out "
-            "after vehicle_get_in_client; tear down with object_delete."
+            "after vehicle_get_in_client; tear down with object_delete of the "
+            "in-session world_spawn object_id (that id does not survive the "
+            "run; deleting a seated transport needs care). The Python "
+            "occupant_client_seated precheck calls client vehicle_telemetry "
+            "only when that peer is probing; without a client peer it is "
+            "skipped (fail open to on-foot teleport) and Enforce still refuses "
+            "a seated occupant."
         )
     )
     async def player_teleport(
@@ -5238,20 +5244,22 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         if uid != "":
             args["uid"] = uid
         async with runtime.tool_lock:
-            telemetry = await runtime.call_bridge(
-                "vehicle_telemetry", {}, "client", _timeout(timeout_s)
-            )
-            if occupant_client_seated(telemetry):
-                return {
-                    "ok": False,
-                    "error": "occupant_client_seated",
-                    "hint": (
-                        "player_teleport of a client-owned seated occupant "
-                        "desyncs client and server. One car per run: there is "
-                        "no get-out after vehicle_get_in_client; tear down "
-                        "with object_delete of the fixture."
-                    ),
-                }
+            if await _runtime_client_peer_probeable(runtime):
+                telemetry = await runtime.call_bridge(
+                    "vehicle_telemetry", {}, "client", _timeout(timeout_s)
+                )
+                if occupant_client_seated(telemetry):
+                    return {
+                        "ok": False,
+                        "error": "occupant_client_seated",
+                        "hint": (
+                            "player_teleport of a client-owned seated occupant "
+                            "desyncs client and server. One car per run: there is "
+                            "no get-out after vehicle_get_in_client; tear down "
+                            "with object_delete of the in-session fixture "
+                            "(object_id does not survive the run)."
+                        ),
+                    }
             if not skip_clearance_check:
                 refusal = await _surface_clearance(args["pos"], _timeout(timeout_s))
                 if refusal is not None:
@@ -5984,7 +5992,10 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "ActionCondition gates such as ActionSwitchLights still fail "
             "until vehicle_enter. One car per run: there is no get-out after "
             "this seat; player_teleport of the occupant returns "
-            "occupant_client_seated. Tear down with object_delete."
+            "occupant_client_seated. Tear down with object_delete of the "
+            "in-session world_spawn object_id — that id does not survive the "
+            "run. Deleting a seated transport needs care (it ejects; a stale "
+            "or guessed object_id is not that fixture)."
         )
     )
     async def vehicle_get_in_client(pos: list[StrictFloat], timeout_s: StrictFloat = DEFAULT_TOOL_TIMEOUT_S) -> dict[str, Any]:

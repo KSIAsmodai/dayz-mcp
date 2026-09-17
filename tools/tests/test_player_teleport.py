@@ -13,6 +13,9 @@ COMMAND = "player_teleport"
 VALID_ARGS = {"pos": [7500.0, 0.0, 7500.0]}
 BRIDGE_PATH = addon_root() / "scripts" / "5_Mission" / "MCPBridge.c"
 ON_FOOT = {"ok": 1, "seated": 0, "is_authority_owner": 0}
+LIVE_CLIENT = {"client_peer": {"last_poll_age_s": 0.1}}
+DEAD_CLIENT = {"client_peer": {"last_poll_age_s": None}}
+STALE_CLIENT = {"client_peer": {"last_poll_age_s": 20.0}}
 
 
 def _method_body(source: str, signature: str) -> str:
@@ -123,12 +126,14 @@ class PlayerTeleportEnforceContractTest(unittest.TestCase):
 
 
 class PlayerTeleportAppToolTest(unittest.IsolatedAsyncioTestCase):
-    async def _build(self):
+    async def _build(self, client_status: dict | None = None):
         app, runtime = server.build_app(
             server.ServerConfig(key="test-key", port=0, log_sink=lambda _message: None)
         )
         tools = {tool.name for tool in await app.list_tools()}
         self.assertIn(COMMAND, tools)
+        payload = LIVE_CLIENT if client_status is None else client_status
+        runtime.bridge_status_payload = AsyncMock(return_value=payload)
         return app, runtime
 
     async def test_skip_clearance_forwards_directly(self) -> None:
@@ -285,6 +290,62 @@ class PlayerTeleportAppToolTest(unittest.IsolatedAsyncioTestCase):
             [item.args[0] for item in call.await_args_list],
             ["vehicle_telemetry", COMMAND],
         )
+
+    async def test_no_client_peer_skips_telemetry_and_teleports(self) -> None:
+        app, runtime = await self._build(DEAD_CLIENT)
+        with patch.object(
+            runtime,
+            "call_bridge",
+            new=AsyncMock(return_value={"ok": 1, "pos_real": [7500.0, 10.0, 7500.0]}),
+        ) as call:
+            await app.call_tool(
+                COMMAND,
+                {
+                    "pos": [7500.0, 0.0, 7500.0],
+                    "skip_clearance_check": True,
+                    "timeout_s": 1.0,
+                },
+            )
+        self.assertEqual([item.args[0] for item in call.await_args_list], [COMMAND])
+        self.assertEqual(
+            call.await_args_list[0].args,
+            (COMMAND, {"pos": [7500.0, 0.0, 7500.0]}, "server", 1.0),
+        )
+
+    async def test_stale_client_peer_skips_telemetry_and_teleports(self) -> None:
+        app, runtime = await self._build(STALE_CLIENT)
+        with patch.object(
+            runtime,
+            "call_bridge",
+            new=AsyncMock(return_value={"ok": 1, "pos_real": [7500.0, 10.0, 7500.0]}),
+        ) as call:
+            await app.call_tool(
+                COMMAND,
+                {
+                    "pos": [7500.0, 0.0, 7500.0],
+                    "skip_clearance_check": True,
+                    "timeout_s": 1.0,
+                },
+            )
+        self.assertEqual([item.args[0] for item in call.await_args_list], [COMMAND])
+
+    async def test_unreadable_status_skips_telemetry_and_teleports(self) -> None:
+        app, runtime = await self._build()
+        runtime.bridge_status_payload = AsyncMock(side_effect=RuntimeError("status down"))
+        with patch.object(
+            runtime,
+            "call_bridge",
+            new=AsyncMock(return_value={"ok": 1, "pos_real": [7500.0, 10.0, 7500.0]}),
+        ) as call:
+            await app.call_tool(
+                COMMAND,
+                {
+                    "pos": [7500.0, 0.0, 7500.0],
+                    "skip_clearance_check": True,
+                    "timeout_s": 1.0,
+                },
+            )
+        self.assertEqual([item.args[0] for item in call.await_args_list], [COMMAND])
 
 
 class OccupantClientSeatedPredicateTest(unittest.TestCase):

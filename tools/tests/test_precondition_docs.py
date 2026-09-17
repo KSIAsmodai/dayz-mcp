@@ -138,6 +138,11 @@ class PreconditionDocsTest(unittest.IsolatedAsyncioTestCase):
         get_in = _tool_description(self.app, "vehicle_get_in_client")
         self.assertIn("occupant_client_seated", get_in)
         self.assertIn("One car per run", get_in)
+        self.assertIn("does not survive the run", description)
+        self.assertIn("does not survive the run", get_in)
+        delete = _tool_description(self.app, "object_delete")
+        self.assertIn("does not survive the run", delete)
+        self.assertIn("needs care", delete)
 
     def test_world_spawn_does_not_claim_fixture_prep(self) -> None:
         description = _tool_description(self.app, "world_spawn")

@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from pathlib import Path
 
@@ -682,20 +682,26 @@ class WireCoercionTests(unittest.IsolatedAsyncioTestCase):
                 return {"ok": 1}
             raise AssertionError(cmd)
 
-        with patch.object(self.runtime, "call_bridge", spy):
-            await self.app.call_tool(
-                "player_teleport",
-                {"pos": [1.0, 0.0, 3.0], "skip_clearance_check": 1},
-            )
-        self.assertEqual(calls, ["vehicle_telemetry", "player_teleport"])
+        live = {"client_peer": {"last_poll_age_s": 0.1}}
+        with patch.object(
+            self.runtime,
+            "bridge_status_payload",
+            new=AsyncMock(return_value=live),
+        ):
+            with patch.object(self.runtime, "call_bridge", spy):
+                await self.app.call_tool(
+                    "player_teleport",
+                    {"pos": [1.0, 0.0, 3.0], "skip_clearance_check": 1},
+                )
+            self.assertEqual(calls, ["vehicle_telemetry", "player_teleport"])
 
-        calls.clear()
-        with patch.object(self.runtime, "call_bridge", spy):
-            await self.app.call_tool(
-                "player_teleport",
-                {"pos": [1.0, 0.0, 3.0], "skip_clearance_check": False},
-            )
-        self.assertEqual(calls, ["vehicle_telemetry", "surface_query", "scene_raycast"])
+            calls.clear()
+            with patch.object(self.runtime, "call_bridge", spy):
+                await self.app.call_tool(
+                    "player_teleport",
+                    {"pos": [1.0, 0.0, 3.0], "skip_clearance_check": False},
+                )
+            self.assertEqual(calls, ["vehicle_telemetry", "surface_query", "scene_raycast"])
 
     async def test_numeric_family_rejects_bool_and_strings_on_wire(self) -> None:
         cases = (
