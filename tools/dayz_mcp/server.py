@@ -6904,7 +6904,20 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
 def parse_args(argv: list[str] | None = None) -> ServerConfig:
     parser = build_server_parser()
     parser.allow_abbrev = False
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
+    tool_pack = args.tool_pack
+    tool_pack_was_explicit = "--tool-pack" in raw_argv or any(
+        token.startswith("--tool-pack=") for token in raw_argv
+    )
+    if not tool_pack_was_explicit:
+        environment_tool_pack = os.environ.get("DAYZ_MCP_TOOL_PACK", "").strip()
+        if environment_tool_pack:
+            tool_pack = environment_tool_pack
+    try:
+        tool_pack_mod.tool_names(tool_pack)
+    except ValueError as exc:
+        parser.error(str(exc))
     client_platform_raw = (
         args.client_platform if args.client_platform in CLIENT_PLATFORM_ALIASES else ""
     )
@@ -6925,6 +6938,7 @@ def parse_args(argv: list[str] | None = None) -> ServerConfig:
         task_label=args.task_label,
         supervised=bool(args.supervised),
         auto_spawn_daemon=bool(args.auto_spawn_daemon),
+        tool_pack=tool_pack,
     )
 
 

@@ -52,6 +52,7 @@ _VALUE_OPTIONS = frozenset(
         "--exec-audit-path",
         "--client-platform",
         "--task-label",
+        "--tool-pack",
     }
 )
 _BOOLEAN_OPTIONS = frozenset(

@@ -502,6 +502,7 @@ _VALUE_FLAGS = frozenset(
         "--exec-allowlist",
         "--client-platform",
         "--task-label",
+        "--tool-pack",
     }
 )
 _BOOLEAN_FLAGS = frozenset(

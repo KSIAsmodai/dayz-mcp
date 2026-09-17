@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from dayz_mcp import server
+from dayz_mcp.server_cli import parse_server_tail_silent
 from tests.test_client_mode import _fixture_client_runtime
 from tests.test_mcp_tools import _content_json
 
@@ -86,6 +88,99 @@ def _assert_suggestions(
         case.assertNotEqual(call["tool"], "lifecycle_status")
         case.assertIsInstance(call["args"], dict)
     return suggestions
+
+
+class ToolPackCliTest(unittest.IsolatedAsyncioTestCase):
+    def test_parse_args_defaults_to_full(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = server.parse_args(["--keyfile", "dummy.key"])
+
+        self.assertEqual(config.tool_pack, "full")
+
+    def test_parse_args_accepts_local8b_for_client(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = server.parse_args(
+                ["--keyfile", "dummy.key", "--client", "--tool-pack", "local8b"]
+            )
+
+        self.assertEqual(config.mode, "client")
+        self.assertEqual(config.tool_pack, "local8b")
+
+    def test_environment_selects_local8b_only_when_cli_omits_flag(self) -> None:
+        with patch.dict(
+            os.environ, {"DAYZ_MCP_TOOL_PACK": "  local8b  "}, clear=True
+        ):
+            from_environment = server.parse_args(["--keyfile", "dummy.key"])
+            cli_wins = server.parse_args(
+                ["--keyfile", "dummy.key", "--tool-pack", "full"]
+            )
+            equals_cli_wins = server.parse_args(
+                ["--keyfile", "dummy.key", "--tool-pack=full"]
+            )
+
+        self.assertEqual(from_environment.tool_pack, "local8b")
+        self.assertEqual(cli_wins.tool_pack, "full")
+        self.assertEqual(equals_cli_wins.tool_pack, "full")
+
+    def test_invalid_cli_and_environment_fail_closed(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(SystemExit):
+                server.parse_args(
+                    ["--keyfile", "dummy.key", "--tool-pack", "not-a-pack"]
+                )
+        with patch.dict(
+            os.environ, {"DAYZ_MCP_TOOL_PACK": "not-a-pack"}, clear=True
+        ):
+            with self.assertRaises(SystemExit):
+                server.parse_args(["--keyfile", "dummy.key"])
+
+    def test_silent_parser_is_argv_only_and_validates_tool_pack(self) -> None:
+        with patch.dict(
+            os.environ, {"DAYZ_MCP_TOOL_PACK": "local8b"}, clear=True
+        ):
+            omitted = parse_server_tail_silent(["--keyfile", "dummy.key"])
+            parsed = parse_server_tail_silent(
+                ["--keyfile", "dummy.key", "--tool-pack", "local8b"]
+            )
+            invalid = parse_server_tail_silent(
+                ["--keyfile", "dummy.key", "--tool-pack", "not-a-pack"]
+            )
+
+        self.assertEqual(omitted.status, "parsed")
+        self.assertIsNotNone(omitted.namespace)
+        self.assertEqual(omitted.namespace.tool_pack, "full")
+        self.assertEqual(parsed.status, "parsed")
+        self.assertIsNotNone(parsed.namespace)
+        self.assertEqual(parsed.namespace.tool_pack, "local8b")
+        self.assertEqual(invalid.status, "invalid")
+
+    def test_local_pack_is_not_forwarded_to_daemon(self) -> None:
+        config = server.ServerConfig(tool_pack="local8b", keyfile="dummy.key")
+
+        argv = server.daemon.build_daemon_argv(config, python="python")
+
+        self.assertNotIn("--tool-pack", argv)
+        self.assertNotIn("local8b", argv)
+
+    async def test_parsed_local8b_builds_exact_catalog(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = server.parse_args(
+                ["--keyfile", "dummy.key", "--tool-pack", "local8b"]
+            )
+
+        app, _runtime = server.build_app(config)
+        names = {tool.name for tool in await app.list_tools()}
+
+        self.assertEqual(names, LOCAL8B_NAMES)
+        self.assertEqual(len(names), 16)
+
+    async def test_parsed_default_build_keeps_object_inspect(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = server.parse_args(["--keyfile", "dummy.key"])
+
+        app, _runtime = server.build_app(config)
+
+        self.assertIn("object_inspect", {tool.name for tool in await app.list_tools()})
 
 
 class Local8BToolPackTest(unittest.IsolatedAsyncioTestCase):
