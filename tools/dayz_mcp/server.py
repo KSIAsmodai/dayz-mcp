@@ -652,11 +652,13 @@ def _world_read_not_ready(
     verdict = compute_bridge_ready(status)
     if verdict["ready"]:
         return None
+    reason = str(verdict["reason"])
     return {
         "ok": False,
+        "error": f"game_not_ready:reason={reason}",
         "code": "not_ready",
-        "reason": verdict["reason"],
-        "next_step": _next_public_call(runtime, "bridge_status", "session_status"),
+        "reason": reason,
+        "next_step": _next_public_call(runtime, "bridge_status"),
     }
 
 
@@ -947,7 +949,9 @@ def _front_key(payload: dict[str, Any], key: str) -> dict[str, Any]:
 def _ready_next_tool(reason: str, *, is_ready: bool) -> str | None:
     if is_ready or reason == "ready":
         return None
-    return next_step(_READY_NEXT_TOOLS.get(reason, "bridge_status"))
+    # Uniform ready=false envelope (fb-20260917-092908-1765 / baf9):
+    # always name bridge_status, never a per-reason fork.
+    return next_step("bridge_status")
 
 
 def _with_ready(status: dict[str, Any]) -> dict[str, Any]:
