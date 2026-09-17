@@ -720,17 +720,22 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         status = _content_json(await app.call_tool("bridge_status", {}))
+        self.assertEqual(next(iter(status)), "ready")
         ready = status["ready"]
         self.assertIs(ready["ready"], True)
         self.assertEqual(ready["reason"], "ready")
+        self.assertNotIn("next_step", ready)
         self.assertIn(ready["reason"], server_module.READY_REASONS)
 
     async def test_bridge_status_ready_false_without_peers(self) -> None:
         app, _runtime = self.build_started()
         status = _content_json(await app.call_tool("bridge_status", {}))
+        self.assertEqual(next(iter(status)), "ready")
         ready = status["ready"]
         self.assertIs(ready["ready"], False)
         self.assertIn(ready["reason"], server_module.READY_REASONS)
+        self.assertEqual(list(ready)[:3], ["ready", "reason", "next_step"])
+        self.assertIn(ready["next_step"], {"bridge_status", "dayz_test_run", "session_status"})
 
     async def test_bridge_status_publishes_frozen_tool_registry_overlay(self) -> None:
         app, _runtime = self.build_started()
