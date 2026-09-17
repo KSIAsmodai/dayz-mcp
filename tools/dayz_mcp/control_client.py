@@ -659,7 +659,8 @@ class ControlClient:
             raise ValueError("invalid_session_lease")
         async with self._transition_lock:
             with self._state_lock:
-                if self.active_lease_token == lease_token:
+                held = self.active_lease_token == lease_token
+                if held:
                     self.state = "RELEASING"
             try:
                 response = await self._session_call(
@@ -668,6 +669,17 @@ class ControlClient:
             except ControlClientError as error:
                 if error.code in {"lease_expired", "lease_invalid"}:
                     self._clear_matching_lease(lease_token)
+                # Silent TTL: this client still held the token, the daemon
+                # forgot it as lease_invalid. That is expiry, not a stolen
+                # token (fb-20260917-100554-d0e0).
+                if error.code == "lease_invalid" and held:
+                    raise ControlClientError(
+                        "lease_expired",
+                        request_stage=error.request_stage,
+                        http_bytes_sent=error.http_bytes_sent,
+                        hint=error.hint,
+                        policy_cause=error.policy_cause,
+                    ) from error
                 raise
             with self._state_lock:
                 if self.active_lease_token == lease_token:

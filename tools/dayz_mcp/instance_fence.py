@@ -56,12 +56,13 @@ FENCE_HINTS: dict[str, str] = {
     ),
     "binding_not_ready": (
         "Instance is minted but the first accredited poll has not landed. "
-        "Wait for bridge_status.ready; do not enqueue yet."
+        "Wait for bridge_status.ready; do not enqueue yet. "
+        "next_step=bridge_status"
     ),
     "binding_retired": (
         "Target instance was retired; its cause is unavailable. Inspect "
-        "lifecycle_status and bridge_status to distinguish a stopped run "
-        "from a replacement before relaunching."
+        "session_status and bridge_status to distinguish a stopped run "
+        "from a replacement before relaunching. next_step=session_status"
     ),
     "instance_peer_collision": (
         "Two live instances are bound for this peer. Stop the extra DayZDiag; "
@@ -164,12 +165,13 @@ _RETIREMENT_HINTS = {
     "replace-role": (
         "retirement_reason=replace-role: Target role was retired for replacement. "
         "Wait for the replacement instance to become BOUND, then retry. "
-        "If none appears, inspect lifecycle_status for a launch failure."
+        "If none appears, inspect session_status for a launch failure. "
+        "next_step=session_status"
     ),
     "stopped": (
         "retirement_reason=stopped: Target instance was retired by the stop "
-        "path. Check lifecycle_status for stop completion before relaunching "
-        "via dayz_test_run."
+        "path. Check session_status for stop completion before relaunching "
+        "via dayz_test_run. next_step=session_status"
     ),
 }
 

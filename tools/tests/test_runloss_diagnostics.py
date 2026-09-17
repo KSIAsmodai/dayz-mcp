@@ -84,7 +84,7 @@ class RunlossRetirementTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error, "instance_config_missing")
         message = self.refusal()
         self.assertIn("replace-role", message)
-        self.assertIn("lifecycle_status for a launch failure", message)
+        self.assertIn("session_status for a launch failure", message)
 
     async def test_pending_replacement_command_keeps_the_replacement_cause(self):
         self.fx.state.retire_role(self.run_id, "client", "replace-role")
@@ -100,7 +100,7 @@ class RunlossRetirementTest(unittest.IsolatedAsyncioTestCase):
         self.fx.state.retire_run(self.run_id, "C:/private/failure.txt")
         message = self.refusal()
         self.assertIn("cause is unavailable", message)
-        self.assertIn("lifecycle_status", message)
+        self.assertIn("session_status", message)
         self.assertNotIn("private", message)
         self.assertNotIn("no live owned process", message)
 

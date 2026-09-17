@@ -168,6 +168,14 @@ class EnqueueRefusalCodeTest(unittest.TestCase):
             server.LEASE_REQUIRED_RECIPE,
         )
         self.assertEqual(
+            server._public_enqueue_error({"error": "lease_expired", "hint": "x"}),
+            server.LEASE_EXPIRED_RECIPE,
+        )
+        self.assertEqual(
+            server._public_enqueue_error({"error": "lease_invalid", "hint": "x"}),
+            server.LEASE_INVALID_RECIPE,
+        )
+        self.assertEqual(
             server._public_enqueue_error({"error": "retail_quarantine", "hint": "x"}),
             server.RETAIL_QUARANTINE_RECIPE,
         )

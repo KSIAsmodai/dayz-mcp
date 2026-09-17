@@ -168,11 +168,11 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ToolError) as raised:
                 await app.call_tool("dayz_knowledge_find", {"query": "Get"})
 
-        self.assertEqual(
-            str(raised.exception),
-            "Error executing tool dayz_knowledge_find: knowledge_not_installed: "
-            "call dayz_knowledge_status, then dayz_knowledge_prepare",
-        )
+        message = str(raised.exception)
+        self.assertIn("knowledge_pack_missing", message)
+        self.assertIn("dayz_mcp.knowledge_pack install", message)
+        self.assertIn("next_step=dayz_knowledge_status", message)
+        self.assertNotIn("dayz_knowledge_prepare", message)
 
     async def test_tool_descriptions_state_result_and_missing_index_remedy(self) -> None:
         app = FastMCP("knowledge-test")
@@ -184,9 +184,10 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(tool=name):
                 self.assertIn("Returns", description)
                 self.assertIn(
-                    "If the index is missing, call dayz_knowledge_status, then dayz_knowledge_prepare",
+                    "If the index is missing, call dayz_knowledge_status",
                     description,
                 )
+                self.assertIn("can_prepare", description)
 
     async def test_status_reports_independent_index_and_pack_states_read_only(self) -> None:
         index_path = self._write_index()
@@ -273,10 +274,8 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ToolError) as raised:
                 await app.call_tool("dayz_knowledge_prepare", {})
 
-        self.assertEqual(
-            str(raised.exception),
-            "Error executing tool dayz_knowledge_prepare: knowledge_pack_invalid",
-        )
+        self.assertIn("knowledge_pack_invalid", str(raised.exception))
+        self.assertIn("next_step=dayz_knowledge_status", str(raised.exception))
         self.assertEqual(index_path.read_bytes(), before_bytes)
 
     async def test_status_covers_the_complete_independent_three_by_three_matrix(self) -> None:
@@ -349,12 +348,22 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
                         ):
                             with self.subTest(tool=tool_name), self.assertRaises(ToolError) as raised:
                                 await app.call_tool(tool_name, arguments)
-                            expected_code = (
-                                "knowledge_not_installed"
-                                if index_state == "missing"
-                                else "knowledge_index_invalid"
-                            )
-                            self.assertIn(expected_code, str(raised.exception))
+                            if pack_state != "valid":
+                                expected_code = (
+                                    "knowledge_pack_missing"
+                                    if pack_state == "missing"
+                                    else "knowledge_pack_invalid"
+                                )
+                            else:
+                                expected_code = (
+                                    "knowledge_not_installed"
+                                    if index_state == "missing"
+                                    else "knowledge_index_invalid"
+                                )
+                            message = str(raised.exception)
+                            self.assertIn(expected_code, message)
+                            if pack_state != "valid":
+                                self.assertNotIn("then dayz_knowledge_prepare", message)
 
                     if pack_state == "valid":
                         prepared = _content_value(
@@ -385,7 +394,15 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
     async def test_find_and_show_return_exact_invalid_index_remedy(self) -> None:
         invalid_path = self.local_app_data / "invalid.json"
         invalid_path.write_text("[]", encoding="utf-8")
-        with patch.dict(os.environ, {"DAYZ_MCP_KNOWLEDGE_JSON": str(invalid_path)}):
+        missing_pack = self.local_app_data / "missing-pack"
+        with patch.dict(
+            os.environ,
+            {
+                "DAYZ_MCP_KNOWLEDGE_JSON": str(invalid_path),
+                "DAYZ_MCP_PACK_DIR": str(missing_pack),
+                "LOCALAPPDATA": str(self.local_app_data),
+            },
+        ):
             app = FastMCP("knowledge-invalid-query-test")
             knowledge.register_knowledge_tools(app)
             for tool_name, arguments in (
@@ -394,11 +411,10 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
             ):
                 with self.subTest(tool=tool_name), self.assertRaises(ToolError) as raised:
                     await app.call_tool(tool_name, arguments)
-                self.assertEqual(
-                    str(raised.exception),
-                    f"Error executing tool {tool_name}: knowledge_index_invalid: "
-                    "call dayz_knowledge_status, then dayz_knowledge_prepare",
-                )
+                message = str(raised.exception)
+                self.assertIn("knowledge_pack_missing", message)
+                self.assertIn("next_step=dayz_knowledge_status", message)
+                self.assertNotIn("then dayz_knowledge_prepare", message)
 
     async def test_prepare_missing_pack_preserves_existing_index(self) -> None:
         index_path = self._write_index()
@@ -418,10 +434,11 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
             knowledge.register_knowledge_tools(app)
             with self.assertRaises(ToolError) as raised:
                 await app.call_tool("dayz_knowledge_prepare", {})
-        self.assertEqual(
+        self.assertIn(
+            "knowledge_pack_missing",
             str(raised.exception),
-            "Error executing tool dayz_knowledge_prepare: knowledge_pack_missing",
         )
+        self.assertIn("next_step=dayz_knowledge_status", str(raised.exception))
         self.assertEqual(index_path.read_bytes(), before_bytes)
 
     async def test_prepare_invalid_pack_preserves_existing_index(self) -> None:
@@ -444,10 +461,8 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
             knowledge.register_knowledge_tools(app)
             with self.assertRaises(ToolError) as raised:
                 await app.call_tool("dayz_knowledge_prepare", {})
-        self.assertEqual(
-            str(raised.exception),
-            "Error executing tool dayz_knowledge_prepare: knowledge_pack_invalid",
-        )
+        self.assertIn("knowledge_pack_invalid", str(raised.exception))
+        self.assertIn("next_step=dayz_knowledge_status", str(raised.exception))
         self.assertEqual(index_path.read_bytes(), before_bytes)
 
     async def test_prepare_extractor_failure_is_rejected_without_replacing_index(self) -> None:
@@ -472,10 +487,8 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
             knowledge.register_knowledge_tools(app)
             with self.assertRaises(ToolError) as raised:
                 await app.call_tool("dayz_knowledge_prepare", {})
-        self.assertEqual(
-            str(raised.exception),
-            "Error executing tool dayz_knowledge_prepare: knowledge_pack_invalid",
-        )
+        self.assertIn("knowledge_pack_invalid", str(raised.exception))
+        self.assertIn("next_step=dayz_knowledge_status", str(raised.exception))
         self.assertEqual(index_path.read_bytes(), before_bytes)
 
     async def test_prepare_preserves_foreign_candidate_and_cleans_only_own_on_replace_failure(self) -> None:

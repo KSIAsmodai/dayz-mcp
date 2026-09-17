@@ -49,6 +49,7 @@ from dayz_mcp.camera_restore import (
 from dayz_mcp.core import EXPECTED_BRIDGE_VERSION
 from dayz_mcp.effective_schema_core import project_server_config_identity
 from dayz_mcp.tool_registry_fingerprint import capture_registry_snapshot
+from dayz_mcp.agent_loop import with_next_step
 from dayz_mcp.knowledge import register_knowledge_tools
 from dayz_mcp.occupant_seat import occupant_client_seated
 from dayz_mcp.peer_liveness import (
@@ -128,7 +129,18 @@ WAIT_FOR_CONDITIONS = frozenset({
     "entity_state",
 })
 TELEMETRY_READ_MODES = frozenset({"object_at", "fixture_jsonl"})
-LEASE_REQUIRED_RECIPE = "lease_required: call session_acquire_wait(purpose=...)"
+LEASE_REQUIRED_RECIPE = with_next_step(
+    "lease_required: call session_acquire_wait(purpose=...)",
+    "session_acquire_wait",
+)
+LEASE_EXPIRED_RECIPE = with_next_step(
+    "lease_expired: call session_acquire_wait(purpose=...)",
+    "session_acquire_wait",
+)
+LEASE_INVALID_RECIPE = with_next_step(
+    "lease_invalid: token was never valid for this client",
+    "session_status",
+)
 TAKEOVER_REQUIRED = "takeover_required"
 RETAIL_QUARANTINE_RECIPE = (
     "retail_quarantine: a DayZ retail process is running on this machine; "
@@ -284,8 +296,10 @@ _PUBLISHED_NOT_READY_CODES = frozenset(
 _WAIT_FOR_RETRYABLE_NOT_READY = frozenset({
     "game_not_ready:reason=server_poll_stale",
     "game_not_ready:reason=client_not_polling",
+    "game_not_ready:reason=binding_not_ready",
     "server_poll_stale",
     "client_not_polling",
+    "binding_not_ready",
 })
 
 
@@ -528,11 +542,19 @@ async def _runtime_client_peer_probeable(runtime: Any) -> bool:
     return _client_peer_probeable(status)
 
 
+def _finite_poll_age(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def compute_bridge_ready(status: dict[str, Any]) -> dict[str, Any]:
     """Return {ready, reason} for a bridge_status snapshot. Additive field.
 
     Version reasons are used only when that peer has polled at least once.
     Server liveness is checked before client liveness.
+
+    A BOUND peer with no accredited poll this generation is binding_not_ready,
+    not server_poll_stale: leftover last_poll_age_s from a dead pre-launch
+    peer must not look like a failed live server (fb-20260917-100411-5edf).
     """
     server = status.get("server_peer") if isinstance(status.get("server_peer"), dict) else {}
     client = status.get("client_peer") if isinstance(status.get("client_peer"), dict) else {}
@@ -556,6 +578,10 @@ def compute_bridge_ready(status: dict[str, Any]) -> dict[str, Any]:
         return {"ready": False, "reason": "legacy_unbound"}
     if s_live and c_live and s_state == "ok" and c_state == "ok":
         return {"ready": True, "reason": "ready"}
+    if s_bind == "BOUND" and not _finite_poll_age(server.get("bound_last_poll_age_s")):
+        return {"ready": False, "reason": "binding_not_ready"}
+    if c_bind == "BOUND" and not _finite_poll_age(client.get("bound_last_poll_age_s")):
+        return {"ready": False, "reason": "binding_not_ready"}
     if s_age is None and c_age is None:
         return {"ready": False, "reason": "no_run"}
     if not s_live:
@@ -759,7 +785,19 @@ def _frozen_tool_registry_overlay(app: FastMCP, config: ServerConfig) -> dict[st
 
 def _with_ready(status: dict[str, Any]) -> dict[str, Any]:
     payload = dict(status)
-    payload["ready"] = compute_bridge_ready(payload)
+    verdict = compute_bridge_ready(payload)
+    server = payload.get("server_peer") if isinstance(payload.get("server_peer"), dict) else {}
+    client = payload.get("client_peer") if isinstance(payload.get("client_peer"), dict) else {}
+    # ready/reason first so an 8B scanner sees the verdict before ages.
+    payload["ready"] = {
+        "ready": verdict["ready"],
+        "reason": verdict["reason"],
+        "stale_threshold_s": PEER_STALE_S,
+        "server_last_poll_age_s": server.get("last_poll_age_s"),
+        "client_last_poll_age_s": client.get("last_poll_age_s"),
+        "server_bound_last_poll_age_s": server.get("bound_last_poll_age_s"),
+        "client_bound_last_poll_age_s": client.get("bound_last_poll_age_s"),
+    }
     return payload
 
 
@@ -973,6 +1011,10 @@ def _public_enqueue_error(
                 f"version_blocked:bridge {got!r} != {expected!r}"
             )
         return LEASE_REQUIRED_RECIPE
+    if code == "lease_expired":
+        return LEASE_EXPIRED_RECIPE
+    if code == "lease_invalid":
+        return LEASE_INVALID_RECIPE
     if code == "version_blocked":
         if _target_peer_down(status_snapshot, peer):
             return f"game_not_ready:reason={_game_not_ready_reason(status_snapshot, peer)}"
@@ -1480,6 +1522,10 @@ class ClientRuntime:
                 return _retail_quarantine_recipe(error.hint)
             if error.code == "lease_required":
                 return LEASE_REQUIRED_RECIPE
+            if error.code == "lease_expired":
+                return LEASE_EXPIRED_RECIPE
+            if error.code == "lease_invalid":
+                return LEASE_INVALID_RECIPE
             if error.hint and (
                 error.code in _REMOTE_ERROR_CODES
                 or error.code in _CONTROL_CLIENT_ERROR_CODES
@@ -4112,7 +4158,11 @@ def _bridge_status_description() -> str:
     return (
         "Inspect peer liveness, version_state, and ready "
         f"{{ready, reason is an OPEN set (today: {reason_list}): validate by shape "
-        "(ready: bool, reason: non-empty string), never against a whitelist}}. "
+        "(ready: bool first, reason: non-empty string, then stale_threshold_s "
+        "and per-peer last_poll_age_s / bound_last_poll_age_s), never against "
+        "a whitelist}}. After a fresh launch, leftover ages from a dead "
+        "pre-launch peer are forgotten; ready.reason is binding_not_ready "
+        "until this generation's first accredited poll, not server_poll_stale. "
         "daemon_modules.stale = source newer than daemon, not a crash. "
         "server_modules watches this tools process's loaded Python sources; "
         "stale lists changed content, unreadable lists unverifiable sources. "
@@ -6437,8 +6487,9 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "ok: true with satisfied: false -- gate on satisfied, not ok. "
             "timeout_s <= 600 (bad_args above; never clamped). "
             "players_* waits through startup: a probe answered "
-            "game_not_ready:reason=server_poll_stale or "
-            "game_not_ready:reason=client_not_polling is retried until "
+            "game_not_ready:reason=server_poll_stale, "
+            "game_not_ready:reason=client_not_polling, or "
+            "binding_not_ready is retried until "
             "timeout_s (not_ready_probes, last_error in the response); any "
             "other not-ready reason aborts on the first probe. "
             "client_not_polling is the normal client-load window after launch; "

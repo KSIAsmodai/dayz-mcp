@@ -422,7 +422,14 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
                     )
                     with self.assertRaises(Exception) as err:
                         await getattr(runtime, method_name)("old-token")
-                    self.assertIn(error, str(err.exception))
+                    # Silent TTL: session_release of a token this client still
+                    # held, answered lease_invalid, is expiry (fb-20260917-100554-d0e0).
+                    expected = (
+                        "lease_expired"
+                        if method_name == "session_release" and error == "lease_invalid"
+                        else error
+                    )
+                    self.assertIn(expected, str(err.exception))
                     self.assertIsNone(runtime.active_lease_token)
                     self.assertEqual(runtime.active_ticket, "ticket-stays")
 
