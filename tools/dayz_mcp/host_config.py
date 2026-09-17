@@ -78,6 +78,7 @@ _VALUE_OPTIONS = frozenset(
         "--exec-audit-path",
         "--client-platform",
         "--task-label",
+        "--tool-pack",
     }
 )
 _BOOLEAN_OPTIONS = frozenset(
@@ -275,6 +276,7 @@ def _registration_from_entry(
         or (option_counts["--exec-allowlist"] == 0 and namespace.exec_allowlist is not None)
         or (option_counts["--exec-audit-path"] == 0 and namespace.exec_audit_path is not None)
         or (option_counts["--task-label"] == 0 and namespace.task_label != "")
+        or (option_counts["--tool-pack"] == 0 and namespace.tool_pack != "full")
         or (option_counts["--supervised"] == 0 and namespace.supervised is not False)
         or (option_counts["--no-daemon-autospawn"] == 0 and namespace.auto_spawn_daemon is not True)
     ):

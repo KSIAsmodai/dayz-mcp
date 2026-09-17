@@ -196,7 +196,7 @@ function Test-CanonicalTextArguments {
   param([string]$ArgsText, [object[]]$ExpectedArguments)
   $valueFlags = @(
     '-m', '--port', '--keyfile', '--expected-game-version', '--idle-timeout',
-    '--exec-allowlist', '--client-platform', '--task-label'
+    '--exec-allowlist', '--client-platform', '--task-label', '--tool-pack'
   )
   $booleanFlags = @(
     '--require-version', '--enable-exec-enforce', '--no-daemon-autospawn',
@@ -329,7 +329,7 @@ function Test-CanonicalArrayArguments {
   if ($Arguments.Count -ne $ExpectedArguments.Count) { return $false }
   $valueFlags = @(
     '-m', '--port', '--keyfile', '--expected-game-version', '--idle-timeout',
-    '--exec-allowlist', '--client-platform', '--task-label'
+    '--exec-allowlist', '--client-platform', '--task-label', '--tool-pack'
   )
   $booleanFlags = @(
     '--require-version', '--enable-exec-enforce', '--no-daemon-autospawn',

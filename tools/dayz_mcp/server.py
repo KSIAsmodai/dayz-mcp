@@ -36,6 +36,7 @@ from dayz_mcp import (
     orphan_guard,
     playbook_tool as playbook_tool_mod,
     registry_lock,
+    tool_pack as tool_pack_mod,
     ui_dialog as ui_dialog_mod,
 )
 from dayz_mcp.control_client import ControlClient, ControlClientError, ControlIdentity
@@ -49,7 +50,7 @@ from dayz_mcp.camera_restore import (
 from dayz_mcp.core import EXPECTED_BRIDGE_VERSION
 from dayz_mcp.effective_schema_core import project_server_config_identity
 from dayz_mcp.tool_registry_fingerprint import capture_registry_snapshot
-from dayz_mcp.agent_loop import with_next_step
+from dayz_mcp.agent_loop import PUBLIC_NEXT_TOOLS, with_next_step
 from dayz_mcp.knowledge import register_knowledge_tools
 from dayz_mcp.occupant_seat import occupant_client_seated
 from dayz_mcp.peer_liveness import (
@@ -76,6 +77,7 @@ from dayz_mcp.process_lifecycle import (
 from dayz_mcp import session_handoff
 from dayz_mcp.mcp_supervisor import Supervisor
 from dayz_mcp.session_coordination import (
+    READ_ONLY_COMMANDS,
     SESSION_TTL_S,
     ClientIdentity,
     command_requires_lease,
@@ -600,6 +602,120 @@ def compute_bridge_ready(status: dict[str, Any]) -> dict[str, Any]:
     return {"ready": False, "reason": "no_run"}
 
 
+_BRIDGE_WORLD_READ_COMMANDS = READ_ONLY_COMMANDS - {"logs_since"}
+
+
+def _visible_public_tools(runtime: Any) -> frozenset[str]:
+    """Return the real registry when build_app published it, else the full public set."""
+    names = getattr(runtime, "_registered_tool_names", None)
+    if isinstance(names, (set, frozenset)):
+        return frozenset(name for name in names if isinstance(name, str))
+    return PUBLIC_NEXT_TOOLS
+
+
+def _next_public_call(runtime: Any, *preferred: str) -> dict[str, Any]:
+    visible = _visible_public_tools(runtime)
+    for tool in preferred:
+        if tool in PUBLIC_NEXT_TOOLS and tool in visible:
+            return {"tool": tool, "args": {}}
+    # Every supported registry pack includes bridge_status. The fallback also
+    # keeps direct Runtime instances useful before build_app attaches its set.
+    return {"tool": "bridge_status", "args": {}}
+
+
+def _world_read_not_ready(
+    runtime: Any, cmd: str, status: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Return the short fail-fast envelope for bridge world reads, or None."""
+    if cmd not in _BRIDGE_WORLD_READ_COMMANDS:
+        return None
+    verdict = compute_bridge_ready(status)
+    if verdict["ready"]:
+        return None
+    return {
+        "ok": False,
+        "code": "not_ready",
+        "reason": verdict["reason"],
+        "next_step": _next_public_call(runtime, "bridge_status", "session_status"),
+    }
+
+
+def _has_ready_snapshot_shape(status: object) -> bool:
+    """True when a client-fetched status has both readiness inputs."""
+    if not isinstance(status, dict):
+        return False
+    for key in ("server_peer", "client_peer"):
+        peer = status.get(key)
+        if not isinstance(peer, dict):
+            return False
+        if "last_poll_age_s" not in peer or "version_state" not in peer:
+            return False
+    return True
+
+
+def _bridge_success_candidates(
+    cmd: str, result: dict[str, Any]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return ordered follow-up candidates derived only from wire-visible facts."""
+    if cmd == "query_all_players":
+        players = result.get("players")
+        if isinstance(players, list) and players:
+            return [("query_player_state", {}), ("bridge_status", {})]
+        if isinstance(players, list):
+            return [
+                ("wait_for", {"condition": "players_at_least", "value": 1}),
+                ("bridge_status", {}),
+            ]
+    if cmd == "entities_query":
+        entities = result.get("entities")
+        if isinstance(entities, list) and entities:
+            row = next((item for item in entities if isinstance(item, dict)), None)
+            if isinstance(row, dict):
+                object_type = row.get("type") or row.get("classname")
+                pos = row.get("pos")
+                if (
+                    isinstance(object_type, str)
+                    and object_type
+                    and isinstance(pos, list)
+                    and len(pos) == 3
+                ):
+                    return [
+                        (
+                            "object_inspect",
+                            {
+                                "type": object_type,
+                                "pos": list(pos),
+                                "want": ["bounding_center"],
+                            },
+                        ),
+                        ("bridge_status", {}),
+                    ]
+    return [("bridge_status", {}), ("session_status", {})]
+
+
+def _with_bridge_success_hints(
+    runtime: Any, cmd: str, result: dict[str, Any]
+) -> dict[str, Any]:
+    """Add at most two calls that exist in this client's exposed registry."""
+    if not isinstance(result, dict) or not result.get("ok"):
+        return result
+    visible = _visible_public_tools(runtime)
+    suggested: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for tool, args in _bridge_success_candidates(cmd, result):
+        if tool in seen or tool not in PUBLIC_NEXT_TOOLS or tool not in visible:
+            continue
+        suggested.append({"tool": tool, "args": dict(args)})
+        seen.add(tool)
+        if len(suggested) == 2:
+            break
+    if not suggested:
+        return result
+    payload = dict(result)
+    payload["suggested_calls"] = suggested
+    return payload
+
+
 # peer + command -> the public tool that fronts it, or None when the command is
 # deliberately not exposed. Hand written from the two Enforce dispatchers
 # (MCPBridge.c SERVER_CAPABILITIES, MCPClientBridge.c CLIENT_POLL_CAPS).
@@ -660,7 +776,10 @@ _BRIDGE_COMMAND_TOOLS: dict[str, dict[str, str | None]] = {
 
 
 def _compare_bridge_capabilities(
-    peer: str, capabilities: object, registered_tools: frozenset[str]
+    peer: str,
+    capabilities: object,
+    registered_tools: frozenset[str],
+    intended_tools: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Cross one peer's announced census against the registered tools.
 
@@ -675,7 +794,12 @@ def _compare_bridge_capabilities(
     block = capabilities if isinstance(capabilities, dict) else {}
     mapping = _BRIDGE_COMMAND_TOOLS.get(peer, {})
     expected_tools = {tool for tool in mapping.values() if tool}
-    registered_bridge_tools = sorted(expected_tools & registered_tools)
+    intended_bridge_tools = (
+        expected_tools
+        if intended_tools is None
+        else expected_tools & set(intended_tools)
+    )
+    registered_bridge_tools = sorted(intended_bridge_tools & registered_tools)
     announced = block.get("announced_commands")
     if block.get("state") != "announced" or not isinstance(announced, list):
         return {
@@ -692,7 +816,8 @@ def _compare_bridge_capabilities(
     missing_tool = sorted(
         item
         for item in announced_set
-        if mapping.get(item) and mapping[item] not in registered_tools
+        if mapping.get(item) in intended_bridge_tools
+        and mapping[item] not in registered_tools
     )
     announced_tools = {mapping[item] for item in announced_set if mapping.get(item)}
     not_announced = sorted(
@@ -711,7 +836,9 @@ def _compare_bridge_capabilities(
 
 
 def _with_capability_comparison(
-    payload: dict[str, Any], registered_tools: frozenset[str]
+    payload: dict[str, Any],
+    registered_tools: frozenset[str],
+    intended_tools: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     enriched = dict(payload)
     for peer, key in (("server", "server_peer"), ("client", "client_peer")):
@@ -720,7 +847,10 @@ def _with_capability_comparison(
             continue
         block = dict(block)
         block["capabilities"] = _compare_bridge_capabilities(
-            peer, block.get("capabilities"), registered_tools
+            peer,
+            block.get("capabilities"),
+            registered_tools,
+            intended_tools,
         )
         enriched[key] = block
     return enriched
@@ -1066,6 +1196,8 @@ class ServerConfig:
     # CLI flag is the spawn authority for this process. It need not match
     # the registered host argv (registration-False / CLI-True is allowed).
     auto_spawn_daemon: bool = True
+    # Opt-in small-model surface. The full public registry remains the default.
+    tool_pack: str = "full"
 
 
 class Runtime:
@@ -1176,6 +1308,9 @@ class Runtime:
 
     async def call_bridge(self, cmd: str, args: dict[str, Any], peer: str, timeout_s: float) -> dict[str, Any]:
         self.touch()
+        early = _world_read_not_ready(self, cmd, self.status())
+        if early is not None:
+            return early
         self.ensure_peer_allowed(peer)
         status, payload = self.state.enqueue_command(
             cmd, args, peer=peer, operation_timeout_s=timeout_s
@@ -1188,7 +1323,8 @@ class Runtime:
             )
 
         command_id = int(payload["id"])
-        return await self.wait_for_result(cmd, command_id, peer, timeout_s)
+        result = await self.wait_for_result(cmd, command_id, peer, timeout_s)
+        return _with_bridge_success_hints(self, cmd, result)
 
     async def call_exec_enforce(self, args: dict[str, Any], timeout_s: float) -> dict[str, Any]:
         self.touch()
@@ -1866,6 +2002,17 @@ class ClientRuntime:
 
     async def call_bridge(self, cmd: str, args: dict[str, Any], peer: str, timeout_s: float) -> dict[str, Any]:
         deadline = self._time_fn() + timeout_s
+        if cmd in _BRIDGE_WORLD_READ_COMMANDS:
+            try:
+                snapshot = await self.bridge_status_payload(
+                    timeout_s=LIVENESS_STATUS_TIMEOUT_S
+                )
+            except Exception:
+                snapshot = None
+            if _has_ready_snapshot_shape(snapshot):
+                early = _world_read_not_ready(self, cmd, snapshot)
+                if early is not None:
+                    return early
         lease_token, _ticket = self._session_state_snapshot()
         request_payload: dict[str, Any] = {
             "identity": self.identity.to_payload(),
@@ -1906,9 +2053,10 @@ class ClientRuntime:
             if "id" not in payload:
                 raise ToolError("daemon_bad_enqueue_response")
             command_id = int(payload["id"])
-            return await self._await_result(
+            result = await self._await_result(
                 cmd, command_id, peer, timeout_s, deadline=deadline
             )
+            return _with_bridge_success_hints(self, cmd, result)
         finally:
             self._allow_stale_policy = previous
 
@@ -3074,6 +3222,18 @@ def _entity_wait_observation(result: Any, entity: dict[str, Any]) -> tuple[dict[
     return observed, actual == entity["equals"]
 
 
+def _structured_not_ready_message(result: object) -> str | None:
+    """Translate the F3 envelope into the existing wait_for retry token."""
+    if not isinstance(result, dict):
+        return None
+    if result.get("ok") not in (False, 0) or result.get("code") != "not_ready":
+        return None
+    reason = result.get("reason")
+    if not isinstance(reason, str) or not reason:
+        return None
+    return f"game_not_ready:reason={reason}"
+
+
 async def execute_wait_for(
     runtime: Any,
     condition: str,
@@ -3212,13 +3372,24 @@ async def execute_wait_for(
                     break
                 probe_timeout = min(DEFAULT_TOOL_TIMEOUT_S, remaining)
                 result = await runtime.call_bridge("telemetry_read", entity_args, "server", probe_timeout)
-                observed, satisfied = _entity_wait_observation(result, entity)
+                not_ready = _structured_not_ready_message(result)
+                if not_ready is not None:
+                    if not_ready not in _WAIT_FOR_RETRYABLE_NOT_READY:
+                        raise ToolError(not_ready)
+                    not_ready_probes += 1
+                    last_error = not_ready
+                    satisfied = False
+                else:
+                    observed, satisfied = _entity_wait_observation(result, entity)
             elif condition in {"players_at_least", "players_at_most"}:
                 probe_timeout = min(DEFAULT_TOOL_TIMEOUT_S, max(remaining, POLL_INTERVAL_S))
                 try:
                     result = await runtime.call_bridge(
                         "query_all_players", {}, "server", probe_timeout
                     )
+                    not_ready = _structured_not_ready_message(result)
+                    if not_ready is not None:
+                        raise ToolError(not_ready)
                 except ToolError as exc:
                     message = str(exc)
                     if message in _WAIT_FOR_RETRYABLE_NOT_READY:
@@ -4190,6 +4361,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
     # Numeric tool annotations are strict at FastMCP ingress: handler guards
     # cannot reject bool after Pydantic has already converted it to 0/1.
     # StrictFloat still accepts JSON integers; optional None stays read/omit.
+    intended_tool_names = tool_pack_mod.tool_names(config.tool_pack)
     runtime: Any = ClientRuntime(config) if config.mode == "client" else Runtime(config)
 
     @asynccontextmanager
@@ -4378,7 +4550,9 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "Read redacted daemon/queue/self coordination state, including "
             "box occupancy (managed runs; foreign DayZ processes seen by image "
             "or by a held UDP port, even without a run record; ports_in_use "
-            "from the socket table; "
+            "from the socket table; foreign_ports remains the complete socket "
+            "table minus managed runs, while foreign_ports_meta summarizes its "
+            "provenance and neither field overrides occupied/available_for; "
             "and the box wait FIFO). box.available_for distinguishes new_launch "
             "from adopt of an ownerless RUNNING_IDLE run; blocked_on then names "
             "session_acquire_wait, not the launch FIFO. blocked_on names the "
@@ -5500,6 +5674,11 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             raise ToolError(
                 _bad_args("want", want, "be a non-empty list of non-empty strings")
             )
+        if type == "" and object_id == 0:
+            raise ToolError(
+                "bad_args: missing target parameters type and object_id; "
+                "use object_id+want or type+pos+want"
+            )
         args: dict[str, Any] = {"want": list(want)}
         args.update(_object_target_args(type, pos, object_id))
         async with runtime.tool_lock:
@@ -6029,7 +6208,11 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         runtime.touch()
         payload = await runtime.bridge_status_payload()
         return await _with_tool_registry(
-            _with_capability_comparison(payload, await _bridge_tool_names())
+            _with_capability_comparison(
+                payload,
+                await _bridge_tool_names(),
+                intended_tool_names,
+            )
         )
 
     @app.tool(
@@ -6707,6 +6890,12 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
     for _closed_tool in _CLOSED_SCHEMA_TOOLS:
         _patch_closed_tool_schema(app, _closed_tool)
     _patch_public_argument_alias(app, "scene_raycast", "from_pos", "from")
+    tool_pack_mod.apply_tool_pack(app._tool_manager, config.tool_pack)
+    registered_tool_names = frozenset(
+        tool.name for tool in app._tool_manager.list_tools()
+    )
+    _registered_tool_names.update(registered_tool_names)
+    runtime._registered_tool_names = registered_tool_names
     _tool_registry_overlay.update(_frozen_tool_registry_overlay(app, config))
     observe_server_sources = install_result_freshness(app, server_sources)
     return app, runtime
@@ -6715,7 +6904,20 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
 def parse_args(argv: list[str] | None = None) -> ServerConfig:
     parser = build_server_parser()
     parser.allow_abbrev = False
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
+    tool_pack = args.tool_pack
+    tool_pack_was_explicit = "--tool-pack" in raw_argv or any(
+        token.startswith("--tool-pack=") for token in raw_argv
+    )
+    if not tool_pack_was_explicit:
+        environment_tool_pack = os.environ.get("DAYZ_MCP_TOOL_PACK", "").strip()
+        if environment_tool_pack:
+            tool_pack = environment_tool_pack
+    try:
+        tool_pack_mod.tool_names(tool_pack)
+    except ValueError as exc:
+        parser.error(str(exc))
     client_platform_raw = (
         args.client_platform if args.client_platform in CLIENT_PLATFORM_ALIASES else ""
     )
@@ -6736,6 +6938,7 @@ def parse_args(argv: list[str] | None = None) -> ServerConfig:
         task_label=args.task_label,
         supervised=bool(args.supervised),
         auto_spawn_daemon=bool(args.auto_spawn_daemon),
+        tool_pack=tool_pack,
     )
 
 

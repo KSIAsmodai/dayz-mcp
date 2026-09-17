@@ -9,7 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 _TOOLS_DIR = Path(__file__).resolve().parents[1]
 if str(_TOOLS_DIR) not in sys.path:
@@ -297,6 +297,64 @@ class WeakAgentReadyTest(unittest.TestCase):
         )
         self.assertIn("session_acquire_wait", message)
         self.assertIn("version_blocked", message)
+
+
+class WeakAgentWorldReadFailFastTest(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _not_ready_snapshot() -> dict[str, object]:
+        return {
+            "server_peer": {"last_poll_age_s": None, "version_state": "ok"},
+            "client_peer": {"last_poll_age_s": None, "version_state": "ok"},
+        }
+
+    async def test_embedded_world_read_returns_not_ready_without_enqueue(self) -> None:
+        runtime = server.Runtime(ServerConfig(log_sink=lambda _m: None))
+        runtime.loopback = MagicMock()
+        runtime.loopback.state.enqueue_command.return_value = (200, {"id": 1})
+        runtime.loopback.state.take_result.return_value = None
+        runtime.status = MagicMock(return_value=self._not_ready_snapshot())
+        started = time.monotonic()
+
+        result = await runtime.call_bridge(
+            "query_all_players", {}, "server", timeout_s=5.0
+        )
+
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.5, f"world-read waited {elapsed:.3f}s")
+        self.assertIs(result["ok"], False)
+        self.assertEqual(result["code"], "not_ready")
+        self.assertEqual(result["reason"], "no_run")
+        self.assertEqual(result["next_step"], {"tool": "bridge_status", "args": {}})
+        self.assertLess(len(server.json.dumps(result, separators=(",", ":"))), 500)
+        self.assertNotEqual(result["next_step"]["tool"], "lifecycle_status")
+        runtime.loopback.state.enqueue_command.assert_not_called()
+
+    async def test_client_world_read_returns_not_ready_without_enqueue(self) -> None:
+        runtime = _fixture_client_runtime(
+            ServerConfig(
+                mode="client",
+                key="k",
+                port=12345,
+                log_sink=lambda _m: None,
+            )
+        )
+        runtime.bridge_status_payload = AsyncMock(
+            return_value=self._not_ready_snapshot()
+        )
+        runtime._call = MagicMock(
+            side_effect=AssertionError("world-read must not enqueue")
+        )
+
+        result = await runtime.call_bridge(
+            "entities_query",
+            {"pos": [1.0, 2.0, 3.0], "radius": 10.0, "limit": 32},
+            "server",
+            timeout_s=5.0,
+        )
+
+        self.assertEqual(result["code"], "not_ready")
+        self.assertEqual(result["next_step"]["tool"], "bridge_status")
+        runtime._call.assert_not_called()
 
 
 class WeakAgentClientModeEnqueueTest(unittest.IsolatedAsyncioTestCase):

@@ -41,7 +41,9 @@ def _live_run(profiles: Path) -> dict:
 
 
 class _FakeRuntime:
-    def __init__(self, player_counts: list[int] | None = None, fallback: int = 0) -> None:
+    def __init__(
+        self, player_counts: list[object] | None = None, fallback: object = 0
+    ) -> None:
         self.tool_lock = asyncio.Lock()
         self._counts = list(player_counts or [])
         self._fallback = fallback
@@ -58,6 +60,8 @@ class _FakeRuntime:
         count = self._counts.pop(0) if self._counts else self._fallback
         if isinstance(count, str):
             raise server.ToolError(count)
+        if isinstance(count, dict):
+            return count
         return {"ok": 1, "players": [{} for _ in range(count)]}
 
 
@@ -254,6 +258,32 @@ class WaitForTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["satisfied"])
         self.assertEqual(result["not_ready_probes"], 1)
         self.assertEqual(result["last_error"], "game_not_ready:reason=client_not_polling")
+        self.assertEqual(runtime.bridge_calls, 2)
+
+    async def test_structured_not_ready_result_is_retried_and_named(self) -> None:
+        runtime = _FakeRuntime(
+            player_counts=[
+                {
+                    "ok": False,
+                    "code": "not_ready",
+                    "reason": "client_not_polling",
+                    "next_step": {"tool": "bridge_status", "args": {}},
+                },
+                1,
+            ]
+        )
+        result = await server.execute_wait_for(
+            runtime,
+            "players_at_least",
+            value=1,
+            timeout_s=10.0,
+            poll_interval_s=0.2,
+        )
+        self.assertTrue(result["satisfied"])
+        self.assertEqual(result["not_ready_probes"], 1)
+        self.assertEqual(
+            result["last_error"], "game_not_ready:reason=client_not_polling"
+        )
         self.assertEqual(runtime.bridge_calls, 2)
 
     async def test_daemon_unavailable_aborts_first_probe(self) -> None:

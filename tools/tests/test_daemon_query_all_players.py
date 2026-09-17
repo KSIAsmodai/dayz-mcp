@@ -31,6 +31,23 @@ class _ResultState:
             return 400, {"error": "unexpected_bridge_call"}
         return 200, {"id": 7}
 
+    def status_snapshot(self) -> dict:
+        version = f"{server.EXPECTED_BRIDGE_VERSION}~1.29.0"
+        return {
+            "peers": {
+                peer: {
+                    "last_poll_age_s": 0.1,
+                    "queue_depth": 0,
+                    "version": version,
+                    "binding_state": "BOUND",
+                    "instance_prefix": peer,
+                    "bound_last_poll_age_s": 0.1,
+                }
+                for peer in ("server", "client")
+            },
+            "results_pending": 0,
+        }
+
     def take_result(self, command_id: int, remove: bool = True) -> dict | None:
         result = self.result
         self.result = None
@@ -82,7 +99,7 @@ class QueryAllPlayersToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(built_runtime, runtime)
         return await app.call_tool("query_all_players", {})
 
-    async def test_wrapper_returns_nonempty_players_body_unchanged(self) -> None:
+    async def test_wrapper_preserves_nonempty_players_and_adds_follow_up(self) -> None:
         body = {
             "ok": 1,
             "players": [
@@ -95,12 +112,30 @@ class QueryAllPlayersToolTest(unittest.IsolatedAsyncioTestCase):
             ],
         }
         _content, structured = await self._call_tool(body)
-        self.assertEqual(structured, body)
+        self.assertEqual(
+            {key: value for key, value in structured.items() if key != "suggested_calls"},
+            body,
+        )
+        self.assertEqual(
+            [call["tool"] for call in structured["suggested_calls"]],
+            ["query_player_state", "bridge_status"],
+        )
 
     async def test_wrapper_treats_empty_players_as_success(self) -> None:
         body = {"ok": 1, "players": []}
         _content, structured = await self._call_tool(body)
-        self.assertEqual(structured, body)
+        self.assertEqual(structured["ok"], 1)
+        self.assertEqual(structured["players"], [])
+        self.assertEqual(
+            structured["suggested_calls"],
+            [
+                {
+                    "tool": "wait_for",
+                    "args": {"condition": "players_at_least", "value": 1},
+                },
+                {"tool": "bridge_status", "args": {}},
+            ],
+        )
 
     async def test_wrapper_propagates_bridge_error(self) -> None:
         with self.assertRaisesRegex(server.ToolError, "identity_required"):

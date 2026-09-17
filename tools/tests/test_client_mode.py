@@ -24,6 +24,9 @@ from tests.test_mcp_tools import _content_json
 from tests.fence_helpers import INST_CLIENT, INST_SERVER
 
 
+_VALID_PEER_VERSION = f"{core.EXPECTED_BRIDGE_VERSION}~1.29.0"
+
+
 def _fixture_client_runtime(
     config: ServerConfig,
     **kwargs: object,
@@ -153,6 +156,18 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
         self._attach_fixture_transport(runtime, srv)
         return runtime
 
+    async def _wait_bridge_ready(
+        self, runtime: server.ClientRuntime, timeout_s: float = 1.0
+    ) -> None:
+        deadline = time.monotonic() + timeout_s
+        last: dict = {}
+        while time.monotonic() < deadline:
+            last = await runtime.bridge_status_payload()
+            if server.compute_bridge_ready(last)["ready"]:
+                return
+            await asyncio.sleep(0.02)
+        self.fail(f"bridge did not become ready: {last.get('ready')}")
+
     @staticmethod
     def _attach_fixture_transport(
         runtime: server.ClientRuntime, srv: DaemonHttpServer
@@ -200,8 +215,10 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_client_call_bridge_round_trip(self) -> None:
         srv = self._daemon()
-        self._peer(srv, "server")
+        self._peer(srv, "server", _VALID_PEER_VERSION)
+        self._peer(srv, "client", _VALID_PEER_VERSION)
         runtime = self._client(srv)
+        await self._wait_bridge_ready(runtime)
         result = await runtime.call_bridge("query_player_state", {}, "server", 2.0)
         self.assertTrue(result["ok"])
         self.assertEqual(result["state"]["pos"], [1.0, 2.0, 3.0])
@@ -280,7 +297,7 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
         runtime._request_once = request_once
         await runtime.call_bridge("query_player_state", {}, "server", 1.25)
 
-        enqueue = calls[0]["payload"]
+        enqueue = next(call["payload"] for call in calls if call["path"] == "/enqueue")
         self.assertEqual(enqueue["identity"], runtime.identity.to_payload())
         self.assertEqual(enqueue["operation_timeout_s"], 1.25)
         self.assertNotIn("lease_token", enqueue)
@@ -668,9 +685,11 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
     async def test_two_clients_one_daemon_both_get_results(self) -> None:
         # F1: multiple sessions driving one game (offline proxy form).
         srv = self._daemon()
-        self._peer(srv, "server")
+        self._peer(srv, "server", _VALID_PEER_VERSION)
+        self._peer(srv, "client", _VALID_PEER_VERSION)
         client_a = self._client(srv)
         client_b = self._client(srv)
+        await self._wait_bridge_ready(client_a)
         result_a, result_b = await asyncio.gather(
             client_a.call_bridge("query_player_state", {}, "server", 2.0),
             client_b.call_bridge("query_player_state", {}, "server", 2.0),
@@ -678,9 +697,10 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result_a["ok"])
         self.assertTrue(result_b["ok"])
 
-    async def test_version_blocked_surfaces_tool_error(self) -> None:
+    async def test_version_blocked_world_read_surfaces_not_ready(self) -> None:
         srv = self._daemon(require_version=True)
         self._peer(srv, "server")  # polls with no version → legacy_blocked
+        self._peer(srv, "client", _VALID_PEER_VERSION)
         runtime = self._client(srv)
         deadline = time.monotonic() + 1.0
         while time.monotonic() < deadline:
@@ -688,10 +708,9 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
             if (status.get("server_peer") or {}).get("last_poll_age_s") is not None:
                 break
             await asyncio.sleep(0.02)
-        with self.assertRaises(Exception) as err:
-            await runtime.call_bridge("query_player_state", {}, "server", 1.0)
-        self.assertEqual(type(err.exception).__name__, "ToolError")
-        self.assertIn("version_blocked", str(err.exception))
+        result = await runtime.call_bridge("query_player_state", {}, "server", 1.0)
+        self.assertEqual(result["code"], "not_ready")
+        self.assertEqual(result["reason"], "version_mismatch")
 
     async def test_bridge_status_is_proxied(self) -> None:
         srv = self._daemon()
@@ -704,29 +723,27 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
     async def test_business_error_is_tool_error(self) -> None:
         srv = self._daemon()
         peer = GamePeer(srv.base, srv.key, "server",
+                        version=_VALID_PEER_VERSION,
                         responder=lambda command: {"id": command["id"], "ok": 0, "error": "no_players"})
         peer.start()
         self.peers.append(peer)
+        self._peer(srv, "client", _VALID_PEER_VERSION)
         runtime = self._client(srv)
+        await self._wait_bridge_ready(runtime)
         with self.assertRaises(Exception) as err:
             await runtime.call_bridge("query_player_state", {}, "server", 1.5)
         self.assertEqual(type(err.exception).__name__, "ToolError")
         self.assertIn("no_players", str(err.exception))
 
-    async def test_timeout_includes_liveness(self) -> None:
-        # The timeout must carry the peer's measured liveness instead of a
-        # fixed string. Daemon alive with no game peer polling -> never polled.
+    async def test_world_read_fail_fast_includes_liveness_reason(self) -> None:
+        # A trustworthy readiness snapshot now avoids both enqueue and timeout.
         srv = self._daemon()  # no game peer → command never resolves
         runtime = self._client(srv)
-        with self.assertRaises(Exception) as err:
-            await runtime.call_bridge("query_player_state", {}, "server", 0.4)
-        self.assertEqual(type(err.exception).__name__, "ToolError")
-        message = str(err.exception)
-        self.assertIn("timeout waiting for", message)
-        self.assertTrue(
-            "has never polled" in message or "last poll" in message, message
-        )
-        self.assertIn("queue_depth", message)
+        started = time.monotonic()
+        result = await runtime.call_bridge("query_player_state", {}, "server", 0.4)
+        self.assertLess(time.monotonic() - started, 0.35)
+        self.assertEqual(result["code"], "not_ready")
+        self.assertEqual(result["reason"], "binding_not_ready")
 
     async def test_timeout_degrades_when_peer_status_is_unavailable(self) -> None:
         # Negative control: inject a bridge_status_payload failure. The happy
@@ -775,7 +792,8 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
         # Exercises the FastMCP wiring (build_app branch + bridge_status tool using
         # the async accessor), not just ClientRuntime in isolation.
         srv = self._daemon()
-        self._peer(srv, "server")
+        self._peer(srv, "server", _VALID_PEER_VERSION)
+        self._peer(srv, "client", _VALID_PEER_VERSION)
         config = ServerConfig(mode="client", key=srv.key, port=srv.port, log_sink=lambda _m: None)
         runtime = _fixture_client_runtime(config)
         self.assertIsInstance(runtime, server.ClientRuntime)
@@ -783,6 +801,7 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
             app, built_runtime = server.build_app(config)
         self.assertIs(built_runtime, runtime)
         self._attach_fixture_transport(runtime, srv)
+        await self._wait_bridge_ready(runtime)
         result = _content_json(await app.call_tool("query_player_state", {"timeout_s": 2.0}))
         self.assertTrue(result["ok"])
         status = _content_json(await app.call_tool("bridge_status", {}))
@@ -838,7 +857,8 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
         # lease held, query_all_players completes; the mutating verbs below are
         # the negative control -- without them a fully broken gate still passes.
         srv = self._daemon()
-        self._peer(srv, "server")
+        self._peer(srv, "server", _VALID_PEER_VERSION)
+        self._peer(srv, "client", _VALID_PEER_VERSION)
         config = ServerConfig(
             mode="client", key=srv.key, port=srv.port,
             client_platform="codex", log_sink=lambda _m: None,
@@ -849,6 +869,7 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(built_runtime, runtime)
         self._attach_fixture_transport(runtime, srv)
         self.assertIsNone(runtime.active_lease_token)
+        await self._wait_bridge_ready(runtime)
 
         read = _content_json(
             await app.call_tool("query_all_players", {"timeout_s": 2.0})
@@ -868,7 +889,8 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
         # the lease, the pure read still completes. Negative control: the foreign
         # lease does not let this session mutate either.
         srv = self._daemon(adopt_fixture=False)
-        self._peer(srv, "server")
+        self._peer(srv, "server", _VALID_PEER_VERSION)
+        self._peer(srv, "client", _VALID_PEER_VERSION)
         holder = self._client(srv, client_platform="codex")
         acquired = await holder.session_acquire("hold the lease")
         self.assertEqual(acquired["status"], "active")
@@ -882,6 +904,7 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(server, "ClientRuntime", return_value=reader):
             app, _built = server.build_app(config)
         self._attach_fixture_transport(reader, srv)
+        await self._wait_bridge_ready(reader)
 
         read = _content_json(
             await app.call_tool("query_all_players", {"timeout_s": 2.0})
@@ -1002,9 +1025,12 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
             srv = DaemonHttpServer(_config(key="ckey"), port=port, adopt_fixture=True)
             srv.start()
             self.servers.append(srv)
-            game = GamePeer(srv.base, srv.key, "server")
-            game.start()
-            self.peers.append(game)
+            for peer in ("server", "client"):
+                game = GamePeer(
+                    srv.base, srv.key, peer, version=_VALID_PEER_VERSION
+                )
+                game.start()
+                self.peers.append(game)
             started["srv"] = srv
             return 4321  # fake pid
 
@@ -1034,7 +1060,15 @@ class ClientModeTest(unittest.IsolatedAsyncioTestCase):
                 timeout=timeout,
             )
         )
-        result = await runtime.call_bridge("query_player_state", {}, "server", 3.0)
+        first = await runtime.call_bridge("query_player_state", {}, "server", 3.0)
+        if first.get("ok"):
+            result = first
+        else:
+            self.assertEqual(first["code"], "not_ready")
+            await self._wait_bridge_ready(runtime)
+            result = await runtime.call_bridge(
+                "query_player_state", {}, "server", 3.0
+            )
         self.assertTrue(result["ok"])
         self.assertIn("srv", started)
 

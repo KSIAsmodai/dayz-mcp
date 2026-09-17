@@ -270,6 +270,7 @@ class _BoxProbes:
     port_scan_known: bool = True
     port_scan_reason: str | None = None
     foreign_ports: tuple[int, ...] = ()
+    foreign_ports_dayz_related: tuple[int, ...] = ()
 
 
 def _activity_from_snapshot(
@@ -551,6 +552,11 @@ def _derive_box(snapshot: _BoxSnapshot, probes: _BoxProbes) -> dict[str, object]
         # Ports held by processes that are not managed runs, whatever their
         # image: the launch diagnosis names the requested port from here.
         "foreign_ports": list(probes.foreign_ports),
+        "foreign_ports_meta": {
+            "count": len(probes.foreign_ports),
+            "dayz_related": len(probes.foreign_ports_dayz_related),
+            "kind": "os_socket_table_ignored_for_occupancy",
+        },
     }
 
 
@@ -4458,6 +4464,7 @@ class ProcessLifecycle:
         rows_by_pid: dict[int, dict[str, object]] = {}
         unattributed = False
         foreign_ports: list[int] = []
+        foreign_ports_dayz_related: list[int] = []
         for holder in holders:
             pid = holder.get("pid")
             port = holder["port"]
@@ -4470,6 +4477,10 @@ class ProcessLifecycle:
                 continue
             if int(port) not in foreign_ports:
                 foreign_ports.append(int(port))
+            # This count is evidence from the image name or the established
+            # DayZ UDP range. Unattributed or unrelated ports are never guessed.
+            if (dayz or int(port) in _DAYZ_PORT_RANGE) and int(port) not in foreign_ports_dayz_related:
+                foreign_ports_dayz_related.append(int(port))
             if pid is None or name is None:
                 # A socket nobody can be named for cannot be cleared as
                 # not-DayZ: the scan is unknown, the box occupied.
@@ -4498,6 +4509,9 @@ class ProcessLifecycle:
                 port_scan_known=False,
                 port_scan_reason="port_attribution_unknown",
                 foreign_ports=tuple(sorted(foreign_ports)),
+                foreign_ports_dayz_related=tuple(
+                    sorted(foreign_ports_dayz_related)
+                ),
             )
         return _BoxProbes(
             foreign=tuple(foreign),
@@ -4505,6 +4519,9 @@ class ProcessLifecycle:
             scan_known=True,
             port_scan_known=True,
             foreign_ports=tuple(sorted(foreign_ports)),
+            foreign_ports_dayz_related=tuple(
+                sorted(foreign_ports_dayz_related)
+            ),
         )
 
     def _probes_for_snapshot(
