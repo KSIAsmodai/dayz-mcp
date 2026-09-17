@@ -624,6 +624,70 @@ def compute_bridge_ready(status: dict[str, Any]) -> dict[str, Any]:
 
 _BRIDGE_WORLD_READ_COMMANDS = READ_ONLY_COMMANDS - {"logs_since"}
 
+# Progressive disclosure (fb-20260917-092908-2ad1): the first tools/list a
+# client-mode caller sees is a compact core (~8.5 KB). world_*/vehicle_*/ui_*
+# stay off the catalog until a lease is held. Embedded mode keeps the full
+# registry so in-process tests and the host-side catalog stay complete.
+_LEASE_REVEAL_PREFIXES = ("world_", "vehicle_", "ui_")
+_INITIAL_CATALOG_NAMES = frozenset(
+    {
+        "bridge_status",
+        "dayz_knowledge_find",
+        "dayz_knowledge_prepare",
+        "dayz_knowledge_show",
+        "dayz_knowledge_status",
+        "dayz_test_close",
+        "dayz_test_run",
+        "dayz_test_stop",
+        "lease_acquire",
+        "pipeline_feedback",
+        "pipeline_inbox",
+        "pipeline_resolve",
+        "session_acquire_wait",
+        "session_heartbeat",
+        "session_release",
+        "session_status",
+        "wait_for",
+    }
+)
+_INITIAL_DESCRIPTION_LIMIT = 80
+
+
+def _runtime_holds_lease(runtime: Any) -> bool:
+    token = getattr(runtime, "active_lease_token", None)
+    if callable(token):
+        try:
+            token = token()
+        except Exception:
+            token = None
+    return bool(token)
+
+
+def _progressive_disclosure_active(runtime: Any) -> bool:
+    config = getattr(runtime, "config", None)
+    return getattr(config, "mode", None) == "client" and not _runtime_holds_lease(runtime)
+
+
+def _is_lease_revealed_tool(name: str) -> bool:
+    return name.startswith(_LEASE_REVEAL_PREFIXES)
+
+
+def _compact_initial_catalog(tools: list[Any]) -> list[Any]:
+    """Keep the pre-lease tools/list near 8.5 KB for 8B clients."""
+    compacted: list[Any] = []
+    for tool in tools:
+        name = getattr(tool, "name", "")
+        if name not in _INITIAL_CATALOG_NAMES or _is_lease_revealed_tool(name):
+            continue
+        description = getattr(tool, "description", None) or ""
+        updates: dict[str, Any] = {}
+        if len(description) > _INITIAL_DESCRIPTION_LIMIT:
+            updates["description"] = description[:_INITIAL_DESCRIPTION_LIMIT].rstrip() + "…"
+        if getattr(tool, "outputSchema", None) is not None:
+            updates["outputSchema"] = None
+        compacted.append(tool.model_copy(update=updates) if updates else tool)
+    return compacted
+
 
 def _visible_public_tools(runtime: Any) -> frozenset[str]:
     """Return the real registry when build_app published it, else the full public set."""
@@ -4543,6 +4607,11 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             payload = await client.session_acquire_wait(
                 purpose.strip(), validated_wait, report
             )
+        if ctx is not None and _runtime_holds_lease(client):
+            try:
+                await ctx.session.send_tool_list_changed()
+            except Exception:
+                pass
         return _annotate_caller_tool_registry(payload, caller_stale)
 
     app.add_tool(
@@ -6942,6 +7011,15 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
     runtime._registered_tool_names = registered_tool_names
     _tool_registry_overlay.update(_frozen_tool_registry_overlay(app, config))
     observe_server_sources = install_result_freshness(app, server_sources)
+    _original_list_tools = app.list_tools
+
+    async def list_tools_progressive():
+        tools = await _original_list_tools()
+        if not _progressive_disclosure_active(runtime):
+            return tools
+        return _compact_initial_catalog(tools)
+
+    app.list_tools = list_tools_progressive  # type: ignore[method-assign]
     return app, runtime
 
 
