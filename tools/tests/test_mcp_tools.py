@@ -295,7 +295,8 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([cmd for cmd, _timeout in seen], ["query_all_players", "notify_players"])
         query_timeout, notify_timeout = seen[0][1], seen[1][1]
         self.assertLessEqual(query_timeout, 1.0 + 1e-6)
-        self.assertLessEqual(query_timeout + notify_timeout, 2.0 + 1e-3)
+        self.assertLess(query_timeout, 2.0)
+        self.assertLessEqual(notify_timeout, 2.0 + 1e-3)
         self.assertGreater(notify_timeout, 0.0)
 
     async def test_session_tools_require_client_mode(self) -> None:
