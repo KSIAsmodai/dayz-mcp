@@ -50,7 +50,7 @@ from dayz_mcp.camera_restore import (
 from dayz_mcp.core import EXPECTED_BRIDGE_VERSION
 from dayz_mcp.effective_schema_core import project_server_config_identity
 from dayz_mcp.tool_registry_fingerprint import capture_registry_snapshot
-from dayz_mcp.agent_loop import PUBLIC_NEXT_TOOLS, next_step, with_next_step
+from dayz_mcp.agent_loop import PUBLIC_NEXT_TOOLS, next_step, ok_next_step, with_next_step
 from dayz_mcp.knowledge import register_knowledge_tools
 from dayz_mcp.occupant_seat import occupant_client_seated
 from dayz_mcp.peer_liveness import (
@@ -796,9 +796,31 @@ def _with_bridge_success_hints(
         if len(suggested) == 2:
             break
     if not suggested:
-        return result
+        return _with_ok_next_step(result, cmd)
     payload = dict(result)
     payload["suggested_calls"] = suggested
+    return _with_ok_next_step(payload, cmd)
+
+
+def _with_ok_next_step(result: dict[str, Any], cmd: str) -> dict[str, Any]:
+    """Attach next_step from PUBLIC_NEXT_TOOLS on ok:true mutation/session results."""
+    if not isinstance(result, dict):
+        return result
+    if result.get("ok") not in (True, 1) and "ok" in result:
+        return result
+    if result.get("error"):
+        return result
+    existing = result.get("next_step")
+    if isinstance(existing, str) and existing in PUBLIC_NEXT_TOOLS:
+        return result
+    mutating = command_requires_lease(cmd)
+    follow = ok_next_step(cmd, mutating=mutating)
+    if follow is None:
+        return result
+    payload = dict(result)
+    if payload.get("ok") not in (True, 1):
+        payload["ok"] = True
+    payload["next_step"] = follow
     return payload
 
 
@@ -4625,7 +4647,9 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             raise ToolError("bad_purpose")
         client = _client_runtime()
         async with client.tool_lock:
-            return await client.session_acquire(purpose.strip())
+            return _with_ok_next_step(
+                await client.session_acquire(purpose.strip()), "session_acquire"
+            )
 
     @app.tool(
         description="LOW-LEVEL: prefer session_acquire_wait. Wait up to 30s for this client's FIFO ticket."
@@ -4635,8 +4659,11 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             raise ToolError("bad_ticket")
         client = _client_runtime()
         async with client.tool_lock:
-            return await client.session_wait(
-                ticket, _require_range(timeout_s, 0.0, 30.0, "bad_wait_timeout")
+            return _with_ok_next_step(
+                await client.session_wait(
+                    ticket, _require_range(timeout_s, 0.0, 30.0, "bad_wait_timeout")
+                ),
+                "session_wait",
             )
 
     @app.tool(
@@ -4682,7 +4709,10 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                 await ctx.session.send_tool_list_changed()
             except Exception:
                 pass
-        return _annotate_caller_tool_registry(payload, caller_stale)
+        return _with_ok_next_step(
+            _annotate_caller_tool_registry(payload, caller_stale),
+            "session_acquire_wait",
+        )
 
     app.add_tool(
         session_acquire_wait,
@@ -4698,7 +4728,9 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             raise ToolError("bad_ticket")
         client = _client_runtime()
         async with client.tool_lock:
-            return await client.session_cancel(ticket)
+            return _with_ok_next_step(
+                await client.session_cancel(ticket), "session_cancel"
+            )
 
     @app.tool(
         description=(
@@ -4713,7 +4745,9 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             raise ToolError("bad_lease_token")
         client = _client_runtime()
         async with client.tool_lock:
-            return await client.session_heartbeat(lease_token)
+            return _with_ok_next_step(
+                await client.session_heartbeat(lease_token), "session_heartbeat"
+            )
 
     @app.tool(
         description=(
@@ -4726,7 +4760,9 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             raise ToolError("bad_lease_token")
         client = _client_runtime()
         async with client.tool_lock:
-            return await client.session_release(lease_token)
+            return _with_ok_next_step(
+                await client.session_release(lease_token), "session_release"
+            )
 
     @app.tool(
         description=(
@@ -4768,7 +4804,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
                 status["box"] = box
             status["blocked_on"] = _session_status_blocked_on(status)
             _attach_runs_retired_recently(status)
-            return status
+            return _with_ok_next_step(status, "session_status")
 
     async def report_dayz_progress(
         ctx: Context | None, stage: str, message: str | None

@@ -32,11 +32,35 @@ PUBLIC_NEXT_TOOLS = frozenset(
 )
 
 
+# Named after an ok:true session or mutation result. Values stay inside
+# PUBLIC_NEXT_TOOLS so an 8B caller can copy the next tool from the payload.
+_OK_NEXT_BY_COMMAND = {
+    "lease_acquire": "bridge_status",
+    "session_acquire": "bridge_status",
+    "session_acquire_wait": "bridge_status",
+    "session_cancel": "session_status",
+    "session_heartbeat": "bridge_status",
+    "session_release": "session_acquire_wait",
+    "session_status": "bridge_status",
+    "session_wait": "session_status",
+}
+
+
 def next_step(tool: str) -> str | None:
     """Return tool if it is safe to name; otherwise None."""
     if tool in PUBLIC_NEXT_TOOLS:
         return tool
     return None
+
+
+def ok_next_step(command: str, *, mutating: bool = False) -> str | None:
+    """Public tool to name after an ok:true mutation or session payload."""
+    mapped = _OK_NEXT_BY_COMMAND.get(command)
+    if mapped is None and mutating:
+        mapped = "session_heartbeat"
+    if mapped is None:
+        return None
+    return next_step(mapped)
 
 
 def with_next_step(message: str, tool: str) -> str:
