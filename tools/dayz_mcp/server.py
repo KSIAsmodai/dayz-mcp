@@ -7019,7 +7019,12 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             return tools
         return _compact_initial_catalog(tools)
 
+    # FastMCP binds tools/list at construction via
+    # _mcp_server.list_tools()(self.list_tools). Replacing the Python
+    # attribute alone leaves the transport handler pointing at the original
+    # full catalog; re-register so MCP clients see the compact list.
     app.list_tools = list_tools_progressive  # type: ignore[method-assign]
+    app._mcp_server.list_tools()(list_tools_progressive)
     return app, runtime
 
 

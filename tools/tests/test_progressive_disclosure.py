@@ -39,6 +39,8 @@ if sys.platform != "win32":
         ),
     )
 
+from mcp.shared.memory import create_connected_server_and_client_session
+
 from dayz_mcp.server import ServerConfig, build_app
 
 
@@ -66,6 +68,13 @@ def _catalog_bytes(tools: list[object]) -> int:
 
 def _names(tools: list[object]) -> set[str]:
     return {tool.name for tool in tools}
+
+
+async def _protocol_list_tools(app) -> list[object]:
+    """tools/list as an MCP client sees it, not app.list_tools()."""
+    async with create_connected_server_and_client_session(app._mcp_server) as session:
+        listed = await session.list_tools()
+    return list(listed.tools)
 
 
 class ProgressiveDisclosureTest(unittest.IsolatedAsyncioTestCase):
@@ -122,6 +131,47 @@ class ProgressiveDisclosureTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("vehicle_enter", after)
         self.assertIn("ui_click", after)
         self.assertGreater(_catalog_bytes(await app.list_tools()), INITIAL_CATALOG_MAX_BYTES)
+
+    async def test_protocol_tools_list_is_compact_before_lease(self) -> None:
+        app, runtime = self._client_app()
+        self.assertIsNone(runtime.active_lease_token)
+        manager_names = {tool.name for tool in app._tool_manager.list_tools()}
+        self.assertIn("world_spawn", manager_names)
+
+        tools = await _protocol_list_tools(app)
+        names = _names(tools)
+        size = _catalog_bytes(tools)
+
+        self.assertGreaterEqual(size, 4_000)
+        self.assertLessEqual(size, INITIAL_CATALOG_MAX_BYTES)
+        self.assertLess(
+            abs(size - INITIAL_CATALOG_TARGET_BYTES),
+            4_000,
+            f"protocol tools/list was {size} bytes, expected ~{INITIAL_CATALOG_TARGET_BYTES}",
+        )
+        for name in names:
+            self.assertFalse(
+                name.startswith(LEASE_REVEAL_PREFIXES),
+                f"{name} must stay hidden until lease on protocol tools/list",
+            )
+        self.assertIn("session_acquire_wait", names)
+        self.assertIn("bridge_status", names)
+        self.assertNotIn("world_spawn", names)
+        self.assertNotIn("vehicle_control", names)
+        self.assertNotIn("ui_dialog", names)
+
+    async def test_protocol_tools_list_reveals_after_lease(self) -> None:
+        app, runtime = self._client_app()
+        before = _names(await _protocol_list_tools(app))
+        runtime.active_lease_token = "lease-token-after-acquire"
+        after_tools = await _protocol_list_tools(app)
+        after = _names(after_tools)
+
+        self.assertNotIn("world_spawn", before)
+        self.assertIn("world_spawn", after)
+        self.assertIn("vehicle_enter", after)
+        self.assertIn("ui_click", after)
+        self.assertGreater(_catalog_bytes(after_tools), INITIAL_CATALOG_MAX_BYTES)
 
 
 if __name__ == "__main__":
