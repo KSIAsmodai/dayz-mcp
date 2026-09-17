@@ -714,6 +714,29 @@ class WeakAgentOkNextStepTest(unittest.TestCase):
         )
         self.assertNotIn("next_step", result)
 
+    def test_heartbeat_next_step_advances_and_does_not_loop(self) -> None:
+        first = server._with_ok_next_step({"ok": True}, "session_heartbeat")
+        second = server._with_ok_next_step({"ok": True}, "session_heartbeat")
+        self.assertEqual(first["next_step"], "bridge_status")
+        self.assertEqual(second["next_step"], "bridge_status")
+        self.assertNotEqual(first["next_step"], "session_heartbeat")
+        self.assertEqual(
+            agent_loop.ok_next_step("session_heartbeat"),
+            "bridge_status",
+        )
+        chained = server._with_ok_next_step({"ok": True}, first["next_step"])
+        self.assertNotEqual(chained.get("next_step"), "session_heartbeat")
+
+    def test_existing_public_next_step_is_preserved(self) -> None:
+        kept = server._with_ok_next_step(
+            {"ok": True, "next_step": "wait_for"}, "world_spawn"
+        )
+        self.assertEqual(kept["next_step"], "wait_for")
+        overwritten = server._with_ok_next_step(
+            {"ok": True, "next_step": "lifecycle_status"}, "world_spawn"
+        )
+        self.assertEqual(overwritten["next_step"], "session_heartbeat")
+
 
 if __name__ == "__main__":
     unittest.main()

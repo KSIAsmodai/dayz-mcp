@@ -39,7 +39,7 @@ _OK_NEXT_BY_COMMAND = {
     "session_acquire": "bridge_status",
     "session_acquire_wait": "bridge_status",
     "session_cancel": "session_status",
-    "session_heartbeat": "session_heartbeat",
+    "session_heartbeat": "bridge_status",
     "session_release": "session_acquire_wait",
     "session_status": "bridge_status",
     "session_wait": "session_status",

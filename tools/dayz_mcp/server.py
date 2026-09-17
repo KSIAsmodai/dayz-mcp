@@ -810,6 +810,9 @@ def _with_ok_next_step(result: dict[str, Any], cmd: str) -> dict[str, Any]:
         return result
     if result.get("error"):
         return result
+    existing = result.get("next_step")
+    if isinstance(existing, str) and existing in PUBLIC_NEXT_TOOLS:
+        return result
     mutating = command_requires_lease(cmd)
     follow = ok_next_step(cmd, mutating=mutating)
     if follow is None:
