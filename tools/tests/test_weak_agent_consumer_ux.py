@@ -15,7 +15,7 @@ _TOOLS_DIR = Path(__file__).resolve().parents[1]
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
-from dayz_mcp import inbox, server
+from dayz_mcp import agent_loop, inbox, server
 from dayz_mcp.server import ServerConfig, build_app
 from tests.test_client_mode import _fixture_client_runtime
 from tests.test_mcp_tools import _content_json
@@ -675,6 +675,44 @@ class WeakAgentForeignPortsTest(unittest.TestCase):
         )
         self.assertEqual(annotated["foreign_ports_meta"]["count"], 2)
         self.assertEqual(annotated["foreign_ports_meta"]["dayz_relevant"], 1)
+
+
+class WeakAgentOkNextStepTest(unittest.TestCase):
+    def test_ok_mutation_payload_names_public_next_step(self) -> None:
+        result = server._with_ok_next_step(
+            {"ok": 1, "object_id": 7}, "world_spawn"
+        )
+        self.assertEqual(result["ok"], 1)
+        self.assertIn(result["next_step"], agent_loop.PUBLIC_NEXT_TOOLS)
+        self.assertEqual(result["next_step"], "session_heartbeat")
+        self.assertEqual(
+            agent_loop.ok_next_step("world_spawn", mutating=True),
+            "session_heartbeat",
+        )
+
+    def test_ok_session_payload_names_public_next_step(self) -> None:
+        acquired = server._with_ok_next_step(
+            {"status": "active", "lease_token": "tok"}, "session_acquire_wait"
+        )
+        self.assertIs(acquired["ok"], True)
+        self.assertEqual(acquired["next_step"], "bridge_status")
+        self.assertIn(acquired["next_step"], agent_loop.PUBLIC_NEXT_TOOLS)
+
+        released = server._with_ok_next_step({"ok": True}, "session_release")
+        self.assertEqual(released["next_step"], "session_acquire_wait")
+        self.assertIn(released["next_step"], agent_loop.PUBLIC_NEXT_TOOLS)
+
+    def test_read_only_ok_payload_does_not_invent_next_step(self) -> None:
+        result = server._with_ok_next_step(
+            {"ok": 1, "players": []}, "query_all_players"
+        )
+        self.assertNotIn("next_step", result)
+
+    def test_error_payload_does_not_get_ok_next_step(self) -> None:
+        result = server._with_ok_next_step(
+            {"ok": False, "error": "no_players"}, "notify_players"
+        )
+        self.assertNotIn("next_step", result)
 
 
 if __name__ == "__main__":
