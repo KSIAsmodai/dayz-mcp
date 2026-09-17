@@ -2844,7 +2844,22 @@ def _object_target_args(
         raise ToolError(
             _bad_args("type", type, "be a non-empty string when object_id is omitted")
         )
+    if not _inspect_type_is_valid(type):
+        raise ToolError(
+            _bad_args("type", type, "be a DayZ classname without whitespace")
+        )
     return {"type": type, "pos": _require_vec3(pos, "pos")}
+
+
+def _inspect_type_is_valid(type: object) -> bool:
+    """True for a classname token object_inspect can echo on rejection."""
+    if not isinstance(type, str) or not type:
+        return False
+    if type.strip() != type or any(ch.isspace() for ch in type):
+        return False
+    if "/" in type or "\\" in type or type[0] in "{[":
+        return False
+    return True
 
 
 def _current_launch_logs(profiles_dir: str, start_epoch: float | None) -> list[str]:
@@ -5726,6 +5741,10 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             raise ToolError(
                 "bad_args: missing target parameters type and object_id; "
                 "use object_id+want or type+pos+want"
+            )
+        if type != "" and not _inspect_type_is_valid(type):
+            raise ToolError(
+                _bad_args("type", type, "be a DayZ classname without whitespace")
             )
         args: dict[str, Any] = {"want": list(want)}
         args.update(_object_target_args(type, pos, object_id))

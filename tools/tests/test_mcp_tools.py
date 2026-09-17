@@ -558,6 +558,26 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
         _assert_tool_error(self, bad_notify.exception)
         self.assertIn("bad_args", str(bad_notify.exception))
 
+    async def test_object_inspect_rejects_invalid_type_and_echoes_it(self) -> None:
+        app, _runtime = self.build_started()
+        invalid = "Not A Classname"
+        with self.assertRaises(Exception) as err:
+            await app.call_tool(
+                "object_inspect",
+                {
+                    "type": invalid,
+                    "pos": [1.0, 2.0, 3.0],
+                    "want": ["bounding_center"],
+                    "timeout_s": 1.0,
+                },
+            )
+        _assert_tool_error(self, err.exception)
+        message = str(err.exception)
+        self.assertIn("bad_args", message)
+        self.assertIn("type", message)
+        self.assertIn(invalid, message)
+        self.assertIn(repr(invalid), message)
+
     async def test_camera_set_look_at_alias_is_normalized_for_the_wire(self) -> None:
         # `lookat` is the value the game matches on
         # (MCPClientBridge.c:1741), but the vector argument beside it is spelled
