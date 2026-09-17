@@ -658,6 +658,24 @@ class WeakAgentForeignPortsTest(unittest.TestCase):
         self.assertEqual(fields["reason"], "port_in_use_foreign")
         self.assertEqual(fields["port"], 2402)
 
+    def test_structured_dayz_relevant_is_recalculated_from_port(self) -> None:
+        box = {
+            "foreign_ports": [
+                {"port": 2302, "dayz_relevant": False},
+                {"port": 53, "dayz_relevant": True},
+            ],
+        }
+        annotated = server._annotate_box_foreign_ports(box)
+        self.assertEqual(
+            annotated["foreign_ports"],
+            [
+                {"port": 2302, "dayz_relevant": True},
+                {"port": 53, "dayz_relevant": False},
+            ],
+        )
+        self.assertEqual(annotated["foreign_ports_meta"]["count"], 2)
+        self.assertEqual(annotated["foreign_ports_meta"]["dayz_relevant"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

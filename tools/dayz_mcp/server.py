@@ -3943,7 +3943,7 @@ def _annotate_box_foreign_ports(box: dict[str, Any]) -> dict[str, Any]:
         extra = dict(item) if isinstance(item, dict) else {}
         extra.pop("port", None)
         extra["port"] = port
-        extra["dayz_relevant"] = bool(extra.get("dayz_relevant", _port_is_dayz_relevant(port)))
+        extra["dayz_relevant"] = _port_is_dayz_relevant(port)
         annotated.append(extra)
     box["foreign_ports"] = annotated
     meta = dict(box.get("foreign_ports_meta") or {})
