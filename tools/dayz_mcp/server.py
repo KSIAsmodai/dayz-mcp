@@ -5223,7 +5223,21 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         if uid != "":
             args["uid"] = uid
         async with runtime.tool_lock:
-            return await runtime.call_bridge("notify_players", args, "server", _timeout(timeout_s))
+            players_result = await runtime.call_bridge(
+                "query_all_players", {}, "server", _timeout(timeout_s)
+            )
+            players = (
+                players_result.get("players")
+                if isinstance(players_result, dict)
+                else None
+            )
+            if isinstance(players, list) and len(players) == 0:
+                # Bridge SendNotification... still sets sent=true with nobody
+                # listening (MCPBridge.c DispatchNotifyPlayers).
+                return {"ok": False, "sent": 0, "error": "no_players"}
+            return await runtime.call_bridge(
+                "notify_players", args, "server", _timeout(timeout_s)
+            )
 
     @app.tool(
         description=(

@@ -191,6 +191,45 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(notified["ok"])
         self.assertEqual(notified["args"]["title"], "Game Master")
 
+    async def test_notify_players_with_zero_players_reports_sent_zero(self) -> None:
+        app, runtime = self.build_started()
+        server_peer = self.start_peer(runtime, "server", version=_VALID_PEER_VERSION)
+        self.start_peer(runtime, "client", version=_VALID_PEER_VERSION)
+        await self.wait_bridge_ready(runtime)
+
+        def responder(command: dict[str, Any]) -> dict[str, Any]:
+            if command["cmd"] == "query_all_players":
+                return {
+                    "id": command["id"],
+                    "ok": 1,
+                    "cmd": command["cmd"],
+                    "players": [],
+                }
+            return {
+                "id": command["id"],
+                "ok": 1,
+                "cmd": command["cmd"],
+                "sent": 1,
+            }
+
+        server_peer.responder = responder
+        result = _content_json(
+            await app.call_tool(
+                "notify_players",
+                {"show_time": 5.0, "title": "Game Master", "timeout_s": 1.0},
+            )
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["error"], "no_players")
+        self.assertNotEqual(result.get("sent"), 1)
+        notify_cmds = [
+            command
+            for command in server_peer.commands_seen
+            if command["cmd"] == "notify_players"
+        ]
+        self.assertEqual(notify_cmds, [])
+
         camera = _content_json(await app.call_tool("camera_get", {"timeout_s": 1.0}))
         self.assertTrue(camera["ok"])
         self.assertEqual(camera["camera"]["pos"], [1.0, 2.0, 3.0])
