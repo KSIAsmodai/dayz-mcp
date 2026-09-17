@@ -216,12 +216,49 @@ class HonestReadyAfterLaunchTest(unittest.TestCase):
             }
         )
         ready = payload["ready"]
+        self.assertEqual(list(payload)[:1], ["ready"])
         self.assertEqual(list(ready)[:2], ["ready", "reason"])
+        self.assertNotIn("next_step", ready)
         self.assertIs(ready["ready"], True)
         self.assertEqual(ready["reason"], "ready")
         self.assertEqual(ready["stale_threshold_s"], PEER_STALE_S)
         self.assertEqual(ready["server_last_poll_age_s"], 0.2)
         self.assertEqual(ready["client_last_poll_age_s"], 0.3)
+
+    def test_not_ready_envelope_names_public_next_step_before_ages(self) -> None:
+        payload = server._with_ready(
+            {
+                "server_peer": {
+                    "binding_state": "BOUND",
+                    "last_poll_age_s": 400.0,
+                    "bound_last_poll_age_s": None,
+                    "version_state": "ok",
+                },
+                "client_peer": {
+                    "binding_state": "BOUND",
+                    "last_poll_age_s": 400.0,
+                    "bound_last_poll_age_s": None,
+                    "version_state": "ok",
+                },
+            }
+        )
+        self.assertEqual(list(payload)[:1], ["ready"])
+        ready = payload["ready"]
+        self.assertEqual(list(ready)[:3], ["ready", "reason", "next_step"])
+        self.assertEqual(ready["reason"], "binding_not_ready")
+        self.assertEqual(ready["next_step"], "bridge_status")
+        self.assertIn(ready["next_step"], agent_loop.PUBLIC_NEXT_TOOLS)
+        self.assertNotEqual(ready["next_step"], "lifecycle_status")
+        self.assertEqual(ready["stale_threshold_s"], PEER_STALE_S)
+        self.assertEqual(ready["server_last_poll_age_s"], 400.0)
+
+    def test_every_not_ready_reason_names_a_public_tool(self) -> None:
+        for reason in sorted(server.READY_REASONS - {"ready"}):
+            tool = server._ready_next_tool(reason, is_ready=False)
+            self.assertIsNotNone(tool, reason)
+            self.assertIn(tool, agent_loop.PUBLIC_NEXT_TOOLS)
+            self.assertNotEqual(tool, "lifecycle_status")
+        self.assertIsNone(server._ready_next_tool("ready", is_ready=True))
 
 
 class RegistrySafeNextStepTest(unittest.TestCase):
@@ -318,6 +355,25 @@ class KnowledgeDeadEndTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn(knowledge_pack.INSTALLER_REMEDY, message)
             self.assertIn("next_step=dayz_knowledge_status", message)
             self.assertNotIn("then dayz_knowledge_prepare", message)
+
+    async def test_status_publishes_install_command_when_pack_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            missing_index = root / "missing.json"
+            missing_pack = root / "missing-pack"
+            with patch.dict(
+                os.environ,
+                {
+                    "DAYZ_MCP_KNOWLEDGE_JSON": str(missing_index),
+                    "DAYZ_MCP_PACK_DIR": str(missing_pack),
+                    "LOCALAPPDATA": str(root),
+                },
+            ):
+                status = knowledge._status(missing_index)
+        self.assertFalse(status["can_prepare"])
+        self.assertEqual(status["pack_state"], "missing")
+        self.assertEqual(status["install_command"], knowledge_pack.INSTALLER_REMEDY)
+        self.assertNotIn("dayz_knowledge_prepare", status["install_command"])
 
     async def test_find_still_routes_to_prepare_when_pack_is_valid(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

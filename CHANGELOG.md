@@ -28,9 +28,11 @@ Merged to `main` after [v1.2](https://github.com/willy92wins/dayz-mcp/releases/t
 ### Fixed
 
 - Fresh-launch `bridge_status.ready` no longer reports `server_poll_stale` from a dead pre-launch peer's leftover poll ages; the verdict is `binding_not_ready` until this generation's first accredited poll, and `ready` publishes `stale_threshold_s` plus per-peer ages (fb-20260917-100411-5edf).
+- `bridge_status` puts the `ready` object first in the payload; when `ready` is false that object names `next_step` (a public tool) before ages.
 - User-facing fence and lease errors name only public MCP tools (`session_status`, `bridge_status`, `session_acquire_wait`) and carry `next_step=`; they no longer cite internal `lifecycle_status`.
 - `session_release` of a token this client still held, answered `lease_invalid` after silent TTL, is `lease_expired` with `next_step=session_acquire_wait` (fb-20260917-100554-d0e0).
 - `dayz_knowledge_find` / `show` no longer route to `dayz_knowledge_prepare` when `can_prepare` is false; the error is `knowledge_pack_missing` / `knowledge_pack_invalid` with the install command (fb-20260917-095637-8011).
+- `dayz_knowledge_status` publishes `install_command` so a missing pack is installed without calling prepare.
 - Untrusted clients keep H3 reads, `server_reload` and an owned `dayz_test_stop` when policy revalidation fails, including the stop of their own idle run; authority changes stay fail-closed (#30, #43).
 - A bare `ClientRuntime` defaults to rejecting a stale policy (BUG-037) (#37).
 - Native job cleanup no longer fails with `native_job_cleanup_incomplete:active_zero_wait_timed_out` when the second wait already ran and no handle remains open (#40, #41).

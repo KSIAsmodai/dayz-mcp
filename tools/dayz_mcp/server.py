@@ -50,7 +50,7 @@ from dayz_mcp.camera_restore import (
 from dayz_mcp.core import EXPECTED_BRIDGE_VERSION
 from dayz_mcp.effective_schema_core import project_server_config_identity
 from dayz_mcp.tool_registry_fingerprint import capture_registry_snapshot
-from dayz_mcp.agent_loop import PUBLIC_NEXT_TOOLS, with_next_step
+from dayz_mcp.agent_loop import PUBLIC_NEXT_TOOLS, next_step, with_next_step
 from dayz_mcp.knowledge import register_knowledge_tools
 from dayz_mcp.occupant_seat import occupant_client_seated
 from dayz_mcp.peer_liveness import (
@@ -215,6 +215,26 @@ READY_REASONS = frozenset({
     "legacy_unbound",
     "creation_time_unreadable",
 })
+# Public tools named when ready is false. Never lifecycle_status.
+# OK payloads do not get next_step here.
+_READY_NEXT_TOOLS: dict[str, str] = {
+    "no_run": "dayz_test_run",
+    "binding_not_ready": "bridge_status",
+    "server_poll_stale": "bridge_status",
+    "client_not_polling": "bridge_status",
+    "binding_retired": "session_status",
+    "unbound_after_restart": "dayz_test_run",
+    "legacy_unbound": "dayz_test_run",
+    "instance_unknown": "dayz_test_run",
+    "instance_malformed": "dayz_test_run",
+    "instance_role_mismatch": "session_status",
+    "instance_peer_collision": "session_status",
+    "instance_unattributed": "bridge_status",
+    "creation_time_unreadable": "bridge_status",
+    "binding_ambiguous": "session_status",
+    "version_mismatch": "bridge_status",
+    "client_legacy_blocked": "dayz_test_run",
+}
 WAIT_FOR_LOOKBACK_MAX = 2000
 # lookback_from="launch" scans each current-launch log from byte 0 instead of
 # rewinding a line count. Measured 2026-08-21: the "[DayZ-MCP] config loaded"
@@ -913,22 +933,45 @@ def _frozen_tool_registry_overlay(app: FastMCP, config: ServerConfig) -> dict[st
     }
 
 
+def _front_key(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    """Put key first so an 8B scanner sees the verdict before the rest of the blob."""
+    if key not in payload:
+        return dict(payload)
+    ordered: dict[str, Any] = {key: payload[key]}
+    for name, value in payload.items():
+        if name != key:
+            ordered[name] = value
+    return ordered
+
+
+def _ready_next_tool(reason: str, *, is_ready: bool) -> str | None:
+    if is_ready or reason == "ready":
+        return None
+    return next_step(_READY_NEXT_TOOLS.get(reason, "bridge_status"))
+
+
 def _with_ready(status: dict[str, Any]) -> dict[str, Any]:
     payload = dict(status)
     verdict = compute_bridge_ready(payload)
     server = payload.get("server_peer") if isinstance(payload.get("server_peer"), dict) else {}
     client = payload.get("client_peer") if isinstance(payload.get("client_peer"), dict) else {}
-    # ready/reason first so an 8B scanner sees the verdict before ages.
-    payload["ready"] = {
-        "ready": verdict["ready"],
-        "reason": verdict["reason"],
-        "stale_threshold_s": PEER_STALE_S,
-        "server_last_poll_age_s": server.get("last_poll_age_s"),
-        "client_last_poll_age_s": client.get("last_poll_age_s"),
-        "server_bound_last_poll_age_s": server.get("bound_last_poll_age_s"),
-        "client_bound_last_poll_age_s": client.get("bound_last_poll_age_s"),
+    is_ready = bool(verdict["ready"])
+    reason = str(verdict["reason"])
+    # ready/reason/next_step first so an 8B scanner sees the verdict before ages.
+    ready: dict[str, Any] = {
+        "ready": is_ready,
+        "reason": reason,
     }
-    return payload
+    follow = _ready_next_tool(reason, is_ready=is_ready)
+    if follow is not None:
+        ready["next_step"] = follow
+    ready["stale_threshold_s"] = PEER_STALE_S
+    ready["server_last_poll_age_s"] = server.get("last_poll_age_s")
+    ready["client_last_poll_age_s"] = client.get("last_poll_age_s")
+    ready["server_bound_last_poll_age_s"] = server.get("bound_last_poll_age_s")
+    ready["client_bound_last_poll_age_s"] = client.get("bound_last_poll_age_s")
+    payload["ready"] = ready
+    return _front_key(payload, "ready")
 
 
 def _game_not_ready_reason(
@@ -4329,7 +4372,8 @@ def _bridge_status_description() -> str:
     return (
         "Inspect peer liveness, version_state, and ready "
         f"{{ready, reason is an OPEN set (today: {reason_list}): validate by shape "
-        "(ready: bool first, reason: non-empty string, then stale_threshold_s "
+        "(ready: bool first, reason: non-empty string, next_step: public tool "
+        "when ready is false, then stale_threshold_s "
         "and per-peer last_poll_age_s / bound_last_poll_age_s), never against "
         "a whitelist}}. After a fresh launch, leftover ages from a dead "
         "pre-launch peer are forgotten; ready.reason is binding_not_ready "
@@ -4432,7 +4476,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             overlay.get("daemon_modules")
         )
         _annotate_mcp_fence(overlay)
-        return overlay
+        return _front_key(overlay, "ready")
 
     async def _bridge_tool_names() -> frozenset[str]:
         if not _registered_tool_names:

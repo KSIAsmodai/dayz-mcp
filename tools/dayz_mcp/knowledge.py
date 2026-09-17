@@ -584,6 +584,7 @@ def _status(path: Path) -> dict[str, Any]:
         "pack_state": pack_state,
         "can_query": index_state == "valid",
         "can_prepare": pack_state == "valid",
+        "install_command": knowledge_pack.INSTALLER_REMEDY,
         "index_path": str(path.resolve()),
         "pack_path": str(pack_path.resolve()) if pack_path is not None else None,
         "index_reason": index_reason,
@@ -684,6 +685,8 @@ def register_knowledge_tools(
     @app.tool(
         description=(
             "Report independent local Knowledge Pack index and installed-pack states. "
+            f"Publishes install_command ({knowledge_pack.INSTALLER_REMEDY}). "
+            "Call dayz_knowledge_prepare only when can_prepare is true. "
             "This operation is read-only."
         )
     )
