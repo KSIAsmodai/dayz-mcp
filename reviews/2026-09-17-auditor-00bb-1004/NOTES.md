@@ -15,11 +15,13 @@ TOUCH who=Auditor what=propose DIFF/PR estado=proposed
 
 ## What changed
 
+- `tools/dayz_mcp/peer_liveness.py` (new, WinDLL-free)
+  - `peer_is_live` / `client_peer_probeable` / `PEER_STALE_S`. `server.py` re-exports the same names so `dayz_test_tool` and `_target_peer_down` stay unchanged.
 - `tools/dayz_mcp/server.py`
-  - `_client_peer_probeable` / `_runtime_client_peer_probeable` reuse `_peer_is_live` (same rule as `_target_peer_down`).
-  - `player_teleport` runs the `occupant_client_seated` telemetry precheck only when the client peer is probeable. Missing, stale, unbound, or unreadable status **fails open** to on-foot teleport. Enforce still refuses a client-seated occupant.
+  - `_runtime_client_peer_probeable` wraps status; missing/stale/unreadable client **fails open**.
+  - `player_teleport` runs the `occupant_client_seated` telemetry precheck only when the client peer is probeable. Enforce still refuses a client-seated occupant.
   - Tool descriptions on `vehicle_get_in_client`, `player_teleport`, and `object_delete` warn that `object_id` does not survive the run and that deleting a seated transport needs care. No pos+type delete API.
-- Host-safe tests: `tools/tests/test_fb_00bb_1004.py` plus extensions in `test_player_teleport.py`, `test_precondition_docs.py`, `test_fb_81f3.py`, `test_wire_coercion_census.py`.
+- Host-safe tests: `tools/tests/test_fb_00bb_1004.py` (predicate + source contracts; no `server` import) plus extensions in `test_player_teleport.py`, `test_precondition_docs.py`, `test_fb_81f3.py`, `test_wire_coercion_census.py` (those last import the Windows stack).
 
 ## What was not changed (1004 guard)
 
@@ -27,10 +29,18 @@ A refuse-while-seated `object_delete` guard is patternable (same telemetry prech
 
 ## How to verify
 
-From `tools/`:
+Host-safe (no WinDLL), from `tools/` with `PYTHONPATH` on `tools/`:
 
 ```text
-python -m pytest tests/test_fb_00bb_1004.py tests/test_player_teleport.py tests/test_precondition_docs.py tests/test_fb_81f3.py tests/test_wire_coercion_census.py::WireCoercionTests::test_skip_clearance_one_bypasses_the_probe -q
+python -m pytest tests/test_fb_00bb_1004.py tests/test_fb_81f3.py -q
+```
+
+Observed on this Linux agent: **12 passed, 3 subtests passed**.
+
+Windows-stack extensions (import `dayz_mcp.server`; not executed here):
+
+```text
+python -m pytest tests/test_player_teleport.py tests/test_precondition_docs.py tests/test_wire_coercion_census.py::WireCoercionTests::test_skip_clearance_one_bypasses_the_probe -q
 ```
 
 No DayZ launch, Diag, AddonBuilder, or Steam.

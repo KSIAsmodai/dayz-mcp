@@ -51,6 +51,11 @@ from dayz_mcp.effective_schema_core import project_server_config_identity
 from dayz_mcp.tool_registry_fingerprint import capture_registry_snapshot
 from dayz_mcp.knowledge import register_knowledge_tools
 from dayz_mcp.occupant_seat import occupant_client_seated
+from dayz_mcp.peer_liveness import (
+    PEER_STALE_S,
+    client_peer_probeable as _client_peer_probeable,
+    peer_is_live as _peer_is_live,
+)
 from dayz_mcp.server_freshness import (
     REMEDIATION as _TOOL_REGISTRY_REMEDIATION,
     ServerSourceWatch,
@@ -172,8 +177,6 @@ DAEMON_AUTOSPAWN_ALREADY = (
     "daemon_unavailable: autospawn already attempted (start the daemon "
     "or omit --no-daemon-autospawn)"
 )
-# A peer with last_poll_age_s >= this value is not live (game polls ~0.2s).
-PEER_STALE_S = 15.0
 # Published ready.reason set. The bridge_status description derives its list
 # from this set plus _FENCE_BLOCK_READY.values() at build time and declares it
 # OPEN: consumers validate by shape, never against a copied whitelist.
@@ -515,33 +518,6 @@ _FENCE_BLOCK_READY = {
     "instance_peer_collision": "instance_peer_collision",
     "creation_time_unreadable": "creation_time_unreadable",
 }
-
-
-def _peer_is_live(peer: object) -> bool:
-    if not isinstance(peer, dict):
-        return False
-    bind = peer.get("binding_state")
-    if bind == "LEGACY_UNBOUND":
-        return False
-    if bind in {None, ""}:
-        age = peer.get("last_poll_age_s")
-    elif bind != "BOUND":
-        return False
-    else:
-        age = peer.get("bound_last_poll_age_s")
-    return isinstance(age, (int, float)) and not isinstance(age, bool) and age < PEER_STALE_S
-
-
-def _client_peer_probeable(status: object) -> bool:
-    """True when the client peer is live enough for a client precheck.
-
-    Same liveness rule as `_peer_is_live` / `_target_peer_down`. A missing or
-    stale client must not enqueue `vehicle_telemetry` (that timeout names the
-    precheck verb, not the caller). fb-20260915-143332-00bb.
-    """
-    if not isinstance(status, dict):
-        return False
-    return _peer_is_live(status.get("client_peer"))
 
 
 async def _runtime_client_peer_probeable(runtime: Any) -> bool:
