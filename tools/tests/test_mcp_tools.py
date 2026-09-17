@@ -191,6 +191,10 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(notified["ok"])
         self.assertEqual(notified["args"]["title"], "Game Master")
 
+        camera = _content_json(await app.call_tool("camera_get", {"timeout_s": 1.0}))
+        self.assertTrue(camera["ok"])
+        self.assertEqual(camera["camera"]["pos"], [1.0, 2.0, 3.0])
+
     async def test_notify_players_with_zero_players_reports_sent_zero(self) -> None:
         app, runtime = self.build_started()
         server_peer = self.start_peer(runtime, "server", version=_VALID_PEER_VERSION)
@@ -230,9 +234,69 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(notify_cmds, [])
 
-        camera = _content_json(await app.call_tool("camera_get", {"timeout_s": 1.0}))
-        self.assertTrue(camera["ok"])
-        self.assertEqual(camera["camera"]["pos"], [1.0, 2.0, 3.0])
+    async def test_notify_players_preflight_failure_still_sends(self) -> None:
+        app, runtime = self.build_started()
+        server_peer = self.start_peer(runtime, "server", version=_VALID_PEER_VERSION)
+        self.start_peer(runtime, "client", version=_VALID_PEER_VERSION)
+        await self.wait_bridge_ready(runtime)
+
+        def responder(command: dict[str, Any]) -> dict[str, Any]:
+            if command["cmd"] == "query_all_players":
+                return {
+                    "id": command["id"],
+                    "ok": 0,
+                    "cmd": command["cmd"],
+                    "error": "query_failed",
+                }
+            return {
+                "id": command["id"],
+                "ok": 1,
+                "cmd": command["cmd"],
+                "sent": 1,
+                "args": command.get("args", {}),
+            }
+
+        server_peer.responder = responder
+        result = _content_json(
+            await app.call_tool(
+                "notify_players",
+                {"show_time": 5.0, "title": "Game Master", "timeout_s": 1.0},
+            )
+        )
+        self.assertTrue(result["ok"])
+        notify_cmds = [
+            command
+            for command in server_peer.commands_seen
+            if command["cmd"] == "notify_players"
+        ]
+        self.assertEqual(len(notify_cmds), 1)
+
+    async def test_notify_players_shares_one_timeout_budget(self) -> None:
+        app, runtime = self.build_started()
+        self.start_peer(runtime, "server", version=_VALID_PEER_VERSION)
+        self.start_peer(runtime, "client", version=_VALID_PEER_VERSION)
+        await self.wait_bridge_ready(runtime)
+
+        seen: list[tuple[str, float]] = []
+        original = runtime.call_bridge
+
+        async def tracking(cmd: str, args: dict[str, Any], peer: str, timeout_s: float):
+            seen.append((cmd, timeout_s))
+            return await original(cmd, args, peer, timeout_s)
+
+        with patch.object(runtime, "call_bridge", tracking):
+            result = _content_json(
+                await app.call_tool(
+                    "notify_players",
+                    {"show_time": 5.0, "title": "Game Master", "timeout_s": 2.0},
+                )
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual([cmd for cmd, _timeout in seen], ["query_all_players", "notify_players"])
+        query_timeout, notify_timeout = seen[0][1], seen[1][1]
+        self.assertLessEqual(query_timeout, 1.0 + 1e-6)
+        self.assertLessEqual(query_timeout + notify_timeout, 2.0 + 1e-3)
+        self.assertGreater(notify_timeout, 0.0)
 
     async def test_session_tools_require_client_mode(self) -> None:
         app, _runtime = self.build_started()

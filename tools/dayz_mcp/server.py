@@ -5187,7 +5187,10 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "Requires a lease (session_acquire_wait). Send a vanilla "
             "notification popup. show_time is the display duration in seconds. "
             "uid empty (default) broadcasts to every connected player; a "
-            "non-empty uid targets that identity."
+            "non-empty uid targets that identity. Returns error=no_players "
+            "when the server reports zero connected players. timeout_s is "
+            "the total budget for the player check plus send; a failed "
+            "player query still attempts the notification."
         )
     )
     async def notify_players(
@@ -5222,21 +5225,38 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         }
         if uid != "":
             args["uid"] = uid
+        budget = _timeout(timeout_s)
+        deadline = time.monotonic() + budget
+
+        def remaining() -> float:
+            left = deadline - time.monotonic()
+            if left <= 0.0:
+                raise ToolError("timeout waiting for notify_players")
+            return left
+
         async with runtime.tool_lock:
-            players_result = await runtime.call_bridge(
-                "query_all_players", {}, "server", _timeout(timeout_s)
-            )
-            players = (
-                players_result.get("players")
-                if isinstance(players_result, dict)
-                else None
-            )
+            # Preflight is advisory and may use at most half the budget so a
+            # timeout/exception still leaves time to send. Only a confirmed
+            # empty players list short-circuits; missing key or query failure
+            # falls through to notify (the pre-check contract).
+            players: object = None
+            try:
+                players_result = await runtime.call_bridge(
+                    "query_all_players",
+                    {},
+                    "server",
+                    min(remaining(), budget / 2.0),
+                )
+            except ToolError:
+                players_result = None
+            if isinstance(players_result, dict):
+                players = players_result.get("players")
             if isinstance(players, list) and len(players) == 0:
                 # Bridge SendNotification... still sets sent=true with nobody
                 # listening (MCPBridge.c DispatchNotifyPlayers).
                 return {"ok": False, "sent": 0, "error": "no_players"}
             return await runtime.call_bridge(
-                "notify_players", args, "server", _timeout(timeout_s)
+                "notify_players", args, "server", remaining()
             )
 
     @app.tool(
