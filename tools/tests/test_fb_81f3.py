@@ -76,6 +76,7 @@ class OccupantClientSeatedSourceContractTest(unittest.TestCase):
         self.assertIn("occupant_client_seated", text)
         self.assertIn("One car per run", text)
         self.assertIn("no get-out", text)
+        self.assertIn("does not survive the run", text)
         self.assertIn("from dayz_mcp.occupant_seat import occupant_client_seated", text)
 
 
