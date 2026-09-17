@@ -97,6 +97,28 @@ class ObjectInspectEnforceContractTest(unittest.TestCase):
 
 
 class ObjectInspectAppToolTest(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_target_names_both_legal_forms_without_empty_echo(self) -> None:
+        app, _runtime = server.build_app(
+            server.ServerConfig(key="test-key", port=0, log_sink=lambda _message: None)
+        )
+
+        with self.assertRaises(Exception) as ctx:
+            await app.call_tool(
+                COMMAND,
+                {
+                    "want": ["bounding_center"],
+                    "pos": [7500.0, 0.0, 7500.0],
+                },
+            )
+
+        message = str(ctx.exception)
+        self.assertIn("bad_args", message)
+        self.assertIn("type", message)
+        self.assertIn("object_id", message)
+        self.assertIn("object_id+want", message)
+        self.assertIn("type+pos+want", message)
+        self.assertNotIn("''", message)
+
     async def test_app_tool_registered_and_forwards(self) -> None:
         app, runtime = server.build_app(
             server.ServerConfig(key="test-key", port=0, log_sink=lambda _message: None)

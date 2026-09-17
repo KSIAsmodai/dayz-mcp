@@ -399,6 +399,18 @@ class PortOccupancyRound2Test(PortOccupancyTest):
         self.assertEqual(box["ports_in_use"], [2402])
         # foreign_ports is the socket table minus managed runs, any image, any port.
         self.assertEqual(box["foreign_ports"], [53, 2402])
+        self.assertEqual(
+            box["foreign_ports_meta"],
+            {
+                "count": 2,
+                "dayz_related": 1,
+                "kind": "os_socket_table_ignored_for_occupancy",
+            },
+        )
+        self.assertEqual(
+            box["foreign_ports_meta"]["count"], len(box["foreign_ports"])
+        )
+        self.assertFalse(box["occupied"])
 
     def test_unknown_scan_carries_its_reason(self) -> None:
         self.lifecycle.port_probe = lambda: {"known": False, "holders": []}

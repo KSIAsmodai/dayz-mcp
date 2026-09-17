@@ -21,6 +21,9 @@ from dayz_mcp.server import EXPECTED_BRIDGE_VERSION, ServerConfig, Runtime, buil
 from tests.fence_helpers import INST_CLIENT, INST_SERVER, bind_both_peers
 
 
+_VALID_PEER_VERSION = f"{EXPECTED_BRIDGE_VERSION}~1.29.0"
+
+
 def _content_json(content: Any) -> dict[str, Any]:
     if isinstance(content, tuple):
         _blocks, structured = content
@@ -156,10 +159,16 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.02)
         self.fail("condition not reached")
 
+    async def wait_bridge_ready(self, runtime: Runtime) -> None:
+        await self.wait_for(
+            lambda: server_module.compute_bridge_ready(runtime.status())["ready"]
+        )
+
     async def test_happy_path_server_and_client_tools(self) -> None:
         app, runtime = self.build_started()
-        self.start_peer(runtime, "server")
-        self.start_peer(runtime, "client")
+        self.start_peer(runtime, "server", version=_VALID_PEER_VERSION)
+        self.start_peer(runtime, "client", version=_VALID_PEER_VERSION)
+        await self.wait_bridge_ready(runtime)
 
         state = _content_json(await app.call_tool("query_player_state", {"timeout_s": 1.0}))
         self.assertTrue(state["ok"])
@@ -588,7 +597,9 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
         # pin an operation far past MAX_OPERATION_PIN_S. The 299 s call below is
         # the negative control: it must still be accepted and complete.
         app, runtime = self.build_started()
-        self.start_peer(runtime, "server")
+        self.start_peer(runtime, "server", version=_VALID_PEER_VERSION)
+        self.start_peer(runtime, "client", version=_VALID_PEER_VERSION)
+        await self.wait_bridge_ready(runtime)
         self.assertEqual(server_module.MAX_TIMEOUT_S, 300.0)
 
         for rejected in (1e6, server_module.MAX_TIMEOUT_S + 0.5):
@@ -610,19 +621,22 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
         def failing(command: dict[str, Any]) -> dict[str, Any]:
             return {"id": command["id"], "ok": 0, "error": "no_players", "cmd": command["cmd"]}
 
-        peer = self.start_peer(runtime, "server")
+        peer = self.start_peer(runtime, "server", version=_VALID_PEER_VERSION)
         peer.responder = failing
+        self.start_peer(runtime, "client", version=_VALID_PEER_VERSION)
+        await self.wait_bridge_ready(runtime)
         with self.assertRaises(Exception) as err:
             await app.call_tool("query_player_state", {"timeout_s": 1.0})
         _assert_tool_error(self, err.exception)
         self.assertIn("no_players", str(err.exception))
 
-    async def test_timeout_includes_liveness(self) -> None:
+    async def test_world_read_not_ready_includes_liveness_reason(self) -> None:
         app, _runtime = self.build_started()
-        with self.assertRaises(Exception) as err:
+        result = _content_json(
             await app.call_tool("query_player_state", {"timeout_s": 0.15})
-        _assert_tool_error(self, err.exception)
-        self.assertIn("server peer has never polled", str(err.exception))
+        )
+        self.assertEqual(result["code"], "not_ready")
+        self.assertEqual(result["reason"], "binding_not_ready")
 
     async def test_mutex_serializes_dayz_touching_tools(self) -> None:
         app, runtime = self.build_started()
@@ -638,20 +652,37 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
     async def test_version_state_legacy_and_legacy_blocked(self) -> None:
         app, runtime = self.build_started()
         self.start_peer(runtime, "server")
-        ok = _content_json(await app.call_tool("query_player_state", {"timeout_s": 1.0}))
-        self.assertTrue(ok["ok"])
+        self.start_peer(runtime, "client")
+        await self.wait_for(
+            lambda: (
+                runtime.status()["server_peer"]["last_poll_age_s"] is not None
+                and runtime.status()["client_peer"]["last_poll_age_s"] is not None
+            )
+        )
+        legacy = _content_json(
+            await app.call_tool("query_player_state", {"timeout_s": 1.0})
+        )
+        self.assertEqual(legacy["code"], "not_ready")
+        self.assertEqual(legacy["reason"], "version_mismatch")
         status = _content_json(await app.call_tool("bridge_status", {}))
         self.assertEqual(status["version_state"]["server"], "legacy")
 
         blocked_app, blocked_runtime = self.build_started(require_version=True)
         self.start_peer(blocked_runtime, "server")
-        await self.wait_for(
-            lambda: blocked_runtime.status()["server_peer"]["last_poll_age_s"] is not None
+        self.start_peer(
+            blocked_runtime, "client", version=_VALID_PEER_VERSION
         )
-        with self.assertRaises(Exception) as err:
+        await self.wait_for(
+            lambda: (
+                blocked_runtime.status()["server_peer"]["last_poll_age_s"] is not None
+                and blocked_runtime.status()["client_peer"]["last_poll_age_s"] is not None
+            )
+        )
+        blocked = _content_json(
             await blocked_app.call_tool("query_player_state", {"timeout_s": 1.0})
-        _assert_tool_error(self, err.exception)
-        self.assertIn("legacy_blocked", str(err.exception))
+        )
+        self.assertEqual(blocked["code"], "not_ready")
+        self.assertEqual(blocked["reason"], "version_mismatch")
         status = _content_json(await blocked_app.call_tool("bridge_status", {}))
         self.assertEqual(status["version_state"]["server"], "legacy_blocked")
 
@@ -665,13 +696,11 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
             return original(*args, **kwargs)
 
         runtime.state.enqueue_command = wrapped  # type: ignore[method-assign]
-        with self.assertRaises(Exception) as err:
+        result = _content_json(
             await app.call_tool("query_player_state", {"timeout_s": 1.0})
-        _assert_tool_error(self, err.exception)
-        message = str(err.exception)
-        self.assertIn("game_not_ready", message)
-        self.assertNotIn("version_blocked:bridge", message)
-        self.assertNotIn("poll did not include ver=", message)
+        )
+        self.assertEqual(result["code"], "not_ready")
+        self.assertEqual(result["reason"], "binding_not_ready")
         self.assertEqual(enqueue_calls, [])
         status = _content_json(await app.call_tool("bridge_status", {}))
         self.assertEqual(
@@ -684,23 +713,46 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
     async def test_version_state_mismatch_and_ok(self) -> None:
         app, runtime = self.build_started(expected_game_version="1.29.0")
         self.start_peer(runtime, "server", version="wrong~1.29.0")
-        await self.wait_for(lambda: runtime.status()["server_peer"]["version"] == "wrong~1.29.0")
-        with self.assertRaises(Exception) as bridge_err:
+        self.start_peer(
+            runtime, "client", version=f"{EXPECTED_BRIDGE_VERSION}~1.29.0"
+        )
+        await self.wait_for(
+            lambda: (
+                runtime.status()["server_peer"]["version"] == "wrong~1.29.0"
+                and runtime.status()["client_peer"]["last_poll_age_s"] is not None
+            )
+        )
+        bridge_error = _content_json(
             await app.call_tool("query_player_state", {"timeout_s": 1.0})
-        _assert_tool_error(self, bridge_err.exception)
-        self.assertIn("version_mismatch", str(bridge_err.exception))
+        )
+        self.assertEqual(bridge_error["code"], "not_ready")
+        self.assertEqual(bridge_error["reason"], "version_mismatch")
 
         game_app, game_runtime = self.build_started(expected_game_version="1.29.0")
         self.start_peer(game_runtime, "server", version=f"{EXPECTED_BRIDGE_VERSION}~1.30.0")
-        await self.wait_for(lambda: game_runtime.status()["server_peer"]["version"] == f"{EXPECTED_BRIDGE_VERSION}~1.30.0")
-        with self.assertRaises(Exception) as game_err:
+        self.start_peer(
+            game_runtime, "client", version=f"{EXPECTED_BRIDGE_VERSION}~1.29.0"
+        )
+        await self.wait_for(
+            lambda: (
+                game_runtime.status()["server_peer"]["version"]
+                == f"{EXPECTED_BRIDGE_VERSION}~1.30.0"
+                and game_runtime.status()["client_peer"]["last_poll_age_s"]
+                is not None
+            )
+        )
+        game_error = _content_json(
             await game_app.call_tool("query_player_state", {"timeout_s": 1.0})
-        _assert_tool_error(self, game_err.exception)
-        self.assertIn("version_mismatch", str(game_err.exception))
+        )
+        self.assertEqual(game_error["code"], "not_ready")
+        self.assertEqual(game_error["reason"], "version_mismatch")
 
         ok_app, ok_runtime = self.build_started(expected_game_version="1.29.0")
         self.start_peer(ok_runtime, "server", version=f"{EXPECTED_BRIDGE_VERSION}~1.29.0")
-        await self.wait_for(lambda: ok_runtime.status()["server_peer"]["version"] == f"{EXPECTED_BRIDGE_VERSION}~1.29.0")
+        self.start_peer(
+            ok_runtime, "client", version=f"{EXPECTED_BRIDGE_VERSION}~1.29.0"
+        )
+        await self.wait_bridge_ready(ok_runtime)
         result = _content_json(await ok_app.call_tool("query_player_state", {"timeout_s": 1.0}))
         self.assertTrue(result["ok"])
         status = _content_json(await ok_app.call_tool("bridge_status", {}))
