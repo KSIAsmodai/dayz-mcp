@@ -39,6 +39,7 @@ from dayz_mcp.instance_fence import (
     instance_prefix,
     normalize_creation_time_utc,
 )
+from dayz_mcp.peer_liveness import PEER_STALE_S
 from dayz_mcp.session_coordination import (
     ClientIdentity,
     MAX_SESSION_QUEUE,
@@ -1082,7 +1083,22 @@ class ServerState:
             self._role_index[(run_id, role)] = minted
             self._bound_queues.setdefault(minted, [])
             self._ever_bound = True
+            # Forget leftover poll clocks from a dead pre-launch peer so
+            # status ages are None until THIS generation polls
+            # (fb-20260917-100411-5edf).
+            self._forget_peer_poll_clocks_locked(role)
         return minted
+
+    def _forget_peer_poll_clocks_locked(self, role: str) -> None:
+        if role == "offline":
+            peers = ("server", "client")
+        elif role in VALID_PEERS:
+            peers = (role,)
+        else:
+            return
+        for peer in peers:
+            self._last_poll_at[peer] = None
+            self._bound_last_poll_at[peer] = None
 
     def confirm(self, instance: str, record: object) -> None:
         pid = getattr(record, "pid", None)
@@ -2988,6 +3004,14 @@ class ServerState:
         elif bound:
             chosen = bound[0]
             state = BINDING_BOUND
+            # A stale leftover BOUND plus a current STARTING launch is the
+            # fresh-launch false negative: ages belong to the dead peer.
+            if starting:
+                bound_at = self._bound_last_poll_at.get(peer)
+                bound_age = None if bound_at is None else max(0.0, now - bound_at)
+                if bound_age is None or bound_age >= PEER_STALE_S:
+                    chosen = starting[0]
+                    state = BINDING_STARTING
         elif starting:
             chosen = starting[0]
             state = BINDING_STARTING

@@ -26,6 +26,7 @@ from typing import Any, Callable, Iterator
 from mcp.server.fastmcp.exceptions import ToolError
 
 from . import knowledge_pack
+from .agent_loop import with_next_step
 
 
 GENERATION_COMMAND = (
@@ -34,8 +35,26 @@ GENERATION_COMMAND = (
     r"%LOCALAPPDATA%\DayZ_MCP\knowledge.json"
 )
 KNOWLEDGE_REMEDY = "call dayz_knowledge_status, then dayz_knowledge_prepare"
-KNOWLEDGE_NOT_INSTALLED = f"knowledge_not_installed: {KNOWLEDGE_REMEDY}"
-KNOWLEDGE_INDEX_INVALID = f"knowledge_index_invalid: {KNOWLEDGE_REMEDY}"
+KNOWLEDGE_NOT_INSTALLED = with_next_step(
+    f"knowledge_not_installed: {KNOWLEDGE_REMEDY}",
+    "dayz_knowledge_prepare",
+)
+KNOWLEDGE_INDEX_INVALID = with_next_step(
+    f"knowledge_index_invalid: {KNOWLEDGE_REMEDY}",
+    "dayz_knowledge_prepare",
+)
+KNOWLEDGE_PACK_MISSING = with_next_step(
+    f"knowledge_pack_missing: install with {knowledge_pack.INSTALLER_REMEDY}",
+    "dayz_knowledge_status",
+)
+KNOWLEDGE_PACK_INVALID = with_next_step(
+    f"knowledge_pack_invalid: install with {knowledge_pack.INSTALLER_REMEDY}",
+    "dayz_knowledge_status",
+)
+KNOWLEDGE_QUERY_WHEN_PACK_MISSING = (
+    "If the index is missing, call dayz_knowledge_status. "
+    "Call dayz_knowledge_prepare only when status.can_prepare is true."
+)
 
 
 class KnowledgeIndexError(ValueError):
@@ -612,6 +631,21 @@ def _publish_index(path: Path, entries: list[dict[str, Any]]) -> dict[str, Any]:
     return {"status": "published", "index_path": str(path), "txid": txid}
 
 
+def _query_unavailable_error(path: Path, *, index_missing: bool) -> str:
+    """Name a recovery that is actually callable.
+
+    knowledge_find used to always route to dayz_knowledge_prepare. When the
+    pack is missing, can_prepare is false and that next_step is a dead end
+    (fb-20260917-095637-8011).
+    """
+    status = _status(path)
+    if status["can_prepare"]:
+        return KNOWLEDGE_NOT_INSTALLED if index_missing else KNOWLEDGE_INDEX_INVALID
+    if status["pack_reason"] == "pack_missing":
+        return KNOWLEDGE_PACK_MISSING
+    return KNOWLEDGE_PACK_INVALID
+
+
 def register_knowledge_tools(
     app: Any,
     index_path: str | Path | None = None,
@@ -623,15 +657,15 @@ def register_knowledge_tools(
         try:
             return load_index(path)
         except FileNotFoundError:
-            raise ToolError(KNOWLEDGE_NOT_INSTALLED) from None
+            raise ToolError(_query_unavailable_error(path, index_missing=True)) from None
         except (OSError, KnowledgeIndexError, TypeError, ValueError):
-            raise ToolError(KNOWLEDGE_INDEX_INVALID) from None
+            raise ToolError(_query_unavailable_error(path, index_missing=False)) from None
 
     @app.tool(
         description=(
             "Search the local DayZ Knowledge Pack index by case-insensitive substring. "
             "Returns up to 20 entries with source_file and evidence citations. "
-            f"If the index is missing, {KNOWLEDGE_REMEDY}."
+            f"{KNOWLEDGE_QUERY_WHEN_PACK_MISSING}"
         )
     )
     def dayz_knowledge_find(query: str) -> list[dict[str, Any]]:
@@ -641,7 +675,7 @@ def register_knowledge_tools(
         description=(
             "Look up one exact API or symbol name in the local DayZ Knowledge Pack index. "
             "Returns its signature, module, source_file, evidence, gotchas, and verified version. "
-            f"If the index is missing, {KNOWLEDGE_REMEDY}."
+            f"{KNOWLEDGE_QUERY_WHEN_PACK_MISSING}"
         )
     )
     def dayz_knowledge_show(name: str) -> dict[str, Any]:
@@ -659,23 +693,25 @@ def register_knowledge_tools(
     @app.tool(
         description=(
             "Prepare the local Knowledge Pack index from the already installed pack. "
-            "This operation never downloads or updates the pack."
+            "This operation never downloads or updates the pack. "
+            "Refuses with knowledge_pack_missing or knowledge_pack_invalid when "
+            "status.can_prepare is false; next_step=dayz_knowledge_status."
         )
     )
     def dayz_knowledge_prepare() -> dict[str, Any]:
         try:
             pack_path = knowledge_pack.resolve_pack_dir()
         except Exception:
-            raise ToolError("knowledge_pack_invalid") from None
+            raise ToolError(KNOWLEDGE_PACK_INVALID) from None
         if not pack_path.exists():
-            raise ToolError("knowledge_pack_missing")
+            raise ToolError(KNOWLEDGE_PACK_MISSING)
         if not pack_path.is_dir():
-            raise ToolError("knowledge_pack_invalid")
+            raise ToolError(KNOWLEDGE_PACK_INVALID)
         try:
             entries = extract_pack(pack_path)
             validate_index(entries)
         except Exception:
-            raise ToolError("knowledge_pack_invalid") from None
+            raise ToolError(KNOWLEDGE_PACK_INVALID) from None
         try:
             result = _publish_index(path, entries)
         except KnowledgePrepareConflict:
