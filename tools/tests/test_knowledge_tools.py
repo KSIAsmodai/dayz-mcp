@@ -189,6 +189,11 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertIn("can_prepare", description)
 
+        status_desc = tools["dayz_knowledge_status"].description or ""
+        self.assertIn("install_command", status_desc)
+        self.assertIn(knowledge_pack.INSTALLER_REMEDY, status_desc)
+        self.assertIn("can_prepare", status_desc)
+
     async def test_status_reports_independent_index_and_pack_states_read_only(self) -> None:
         index_path = self._write_index()
         before_bytes = index_path.read_bytes()
@@ -213,6 +218,7 @@ class KnowledgeMcpToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status["can_prepare"])
         self.assertEqual(status["index_path"], str(index_path.resolve()))
         self.assertEqual(status["pack_path"], str(missing_pack.resolve()))
+        self.assertEqual(status["install_command"], knowledge_pack.INSTALLER_REMEDY)
         self.assertEqual(index_path.read_bytes(), before_bytes)
         self.assertEqual(sorted(path.name for path in index_path.parent.iterdir()), before_names)
 
