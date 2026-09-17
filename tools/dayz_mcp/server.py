@@ -3985,6 +3985,57 @@ def _attach_queue_offer(
     return payload
 
 
+_DAYZ_GAME_PORT_MIN = 2302
+_DAYZ_GAME_PORT_MAX = 2999
+
+
+def _port_is_dayz_relevant(port: object) -> bool:
+    return (
+        isinstance(port, int)
+        and not isinstance(port, bool)
+        and _DAYZ_GAME_PORT_MIN <= port <= _DAYZ_GAME_PORT_MAX
+    )
+
+
+def _foreign_port_number(item: object) -> int | None:
+    if isinstance(item, int) and not isinstance(item, bool):
+        return item
+    if isinstance(item, dict):
+        port = item.get("port")
+        if isinstance(port, int) and not isinstance(port, bool):
+            return port
+    return None
+
+
+def _foreign_ports_contain(foreign_ports: object, port: int) -> bool:
+    if not isinstance(foreign_ports, list):
+        return False
+    return any(_foreign_port_number(item) == port for item in foreign_ports)
+
+
+def _annotate_box_foreign_ports(box: dict[str, Any]) -> dict[str, Any]:
+    """Flag DayZ-relevant listeners so 8B callers can ignore DNS/IKE noise."""
+    ports = box.get("foreign_ports")
+    if not isinstance(ports, list):
+        return box
+    annotated: list[dict[str, Any]] = []
+    for item in ports:
+        port = _foreign_port_number(item)
+        if port is None:
+            continue
+        extra = dict(item) if isinstance(item, dict) else {}
+        extra.pop("port", None)
+        extra["port"] = port
+        extra["dayz_relevant"] = _port_is_dayz_relevant(port)
+        annotated.append(extra)
+    box["foreign_ports"] = annotated
+    meta = dict(box.get("foreign_ports_meta") or {})
+    meta["count"] = len(annotated)
+    meta["dayz_relevant"] = sum(1 for item in annotated if item.get("dayz_relevant"))
+    box["foreign_ports_meta"] = meta
+    return box
+
+
 def _port_conflict_fields(box: object, port: int | None) -> dict[str, Any]:
     """Diagnosis for an active_run_exists that the box alone cannot explain.
 
@@ -4008,7 +4059,7 @@ def _port_conflict_fields(box: object, port: int | None) -> dict[str, Any]:
         }
     foreign_ports = box.get("foreign_ports")
     runs = box.get("runs")
-    if isinstance(port, int) and isinstance(foreign_ports, list) and port in foreign_ports:
+    if isinstance(port, int) and _foreign_ports_contain(foreign_ports, port):
         # Any requested port, any image: foreign_ports is the socket table minus
         # the managed runs. When a run also occupies the box, both blockers are
         # named -- freeing the box does not free this port.
@@ -4682,9 +4733,11 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             "Read redacted daemon/queue/self coordination state, including "
             "box occupancy (managed runs; foreign DayZ processes seen by image "
             "or by a held UDP port, even without a run record; ports_in_use "
-            "from the socket table; foreign_ports remains the complete socket "
-            "table minus managed runs, while foreign_ports_meta summarizes its "
-            "provenance and neither field overrides occupied/available_for; "
+            "from the socket table; foreign_ports is the complete socket "
+            "table minus managed runs, each entry {port, dayz_relevant} so "
+            "8B callers can ignore DNS/IKE listeners; foreign_ports_meta "
+            "summarizes count/dayz_relevant and neither field overrides "
+            "occupied/available_for; "
             "and the box wait FIFO). box.available_for distinguishes new_launch "
             "from adopt of an ownerless RUNNING_IDLE run; blocked_on then names "
             "session_acquire_wait, not the launch FIFO. blocked_on names the "
@@ -4699,6 +4752,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
             box = status.get("box")
             if isinstance(box, dict):
                 box = dict(box)
+                _annotate_box_foreign_ports(box)
                 box["available_for"] = box_available_for(box)
                 caller_session = str(
                     getattr(getattr(client, "identity", None), "session_id", "") or ""

@@ -626,5 +626,56 @@ class WeakAgentInboxFieldTest(unittest.TestCase):
         self.assertIn("120", message)
 
 
+class WeakAgentForeignPortsTest(unittest.TestCase):
+    def test_foreign_ports_flag_dayz_relevant_and_keep_noise_visible(self) -> None:
+        box = {
+            "foreign_ports": [53, 2302, 65530],
+            "foreign_ports_meta": {"kind": "os_socket_table_ignored_for_occupancy"},
+        }
+        annotated = server._annotate_box_foreign_ports(box)
+        self.assertEqual(
+            annotated["foreign_ports"],
+            [
+                {"port": 53, "dayz_relevant": False},
+                {"port": 2302, "dayz_relevant": True},
+                {"port": 65530, "dayz_relevant": False},
+            ],
+        )
+        self.assertEqual(annotated["foreign_ports_meta"]["count"], 3)
+        self.assertEqual(annotated["foreign_ports_meta"]["dayz_relevant"], 1)
+        self.assertTrue(server._foreign_ports_contain(annotated["foreign_ports"], 53))
+        self.assertTrue(server._foreign_ports_contain(annotated["foreign_ports"], 2302))
+        self.assertFalse(server._port_is_dayz_relevant(53))
+        self.assertTrue(server._port_is_dayz_relevant(2302))
+
+    def test_port_conflict_still_sees_annotated_foreign_ports(self) -> None:
+        box = {
+            "foreign_ports": [{"port": 2402, "dayz_relevant": True}],
+            "runs": [],
+            "port_scan_known": True,
+        }
+        fields = server._port_conflict_fields(box, 2402)
+        self.assertEqual(fields["reason"], "port_in_use_foreign")
+        self.assertEqual(fields["port"], 2402)
+
+    def test_structured_dayz_relevant_is_recalculated_from_port(self) -> None:
+        box = {
+            "foreign_ports": [
+                {"port": 2302, "dayz_relevant": False},
+                {"port": 53, "dayz_relevant": True},
+            ],
+        }
+        annotated = server._annotate_box_foreign_ports(box)
+        self.assertEqual(
+            annotated["foreign_ports"],
+            [
+                {"port": 2302, "dayz_relevant": True},
+                {"port": 53, "dayz_relevant": False},
+            ],
+        )
+        self.assertEqual(annotated["foreign_ports_meta"]["count"], 2)
+        self.assertEqual(annotated["foreign_ports_meta"]["dayz_relevant"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
