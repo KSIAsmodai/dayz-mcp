@@ -724,8 +724,9 @@ class WeakAgentOkNextStepTest(unittest.TestCase):
             agent_loop.ok_next_step("session_heartbeat"),
             "bridge_status",
         )
-        chained = server._with_ok_next_step({"ok": True}, first["next_step"])
-        self.assertNotEqual(chained.get("next_step"), "session_heartbeat")
+        copied = first["next_step"]
+        self.assertNotEqual(copied, "session_heartbeat")
+        self.assertEqual(agent_loop.ok_next_step(copied), None)
 
     def test_existing_public_next_step_is_preserved(self) -> None:
         kept = server._with_ok_next_step(
