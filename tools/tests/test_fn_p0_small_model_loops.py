@@ -256,9 +256,25 @@ class HonestReadyAfterLaunchTest(unittest.TestCase):
         for reason in sorted(server.READY_REASONS - {"ready"}):
             tool = server._ready_next_tool(reason, is_ready=False)
             self.assertIsNotNone(tool, reason)
+            self.assertEqual(tool, "bridge_status")
             self.assertIn(tool, agent_loop.PUBLIC_NEXT_TOOLS)
             self.assertNotEqual(tool, "lifecycle_status")
         self.assertIsNone(server._ready_next_tool("ready", is_ready=True))
+
+    def test_world_read_not_ready_uses_uniform_game_not_ready_envelope(self) -> None:
+        runtime = types.SimpleNamespace(_registered_tool_names={"bridge_status", "session_status"})
+        status = {
+            "server_peer": {"last_poll_age_s": None, "version_state": "ok"},
+            "client_peer": {"last_poll_age_s": None, "version_state": "ok"},
+        }
+        envelope = server._world_read_not_ready(runtime, "query_all_players", status)
+        self.assertIsNotNone(envelope)
+        assert envelope is not None
+        self.assertIs(envelope["ok"], False)
+        self.assertEqual(envelope["error"], "game_not_ready:reason=no_run")
+        self.assertEqual(envelope["reason"], "no_run")
+        self.assertEqual(envelope["next_step"], {"tool": "bridge_status", "args": {}})
+        self.assertTrue(envelope["error"].startswith("game_not_ready:reason="))
 
 
 class RegistrySafeNextStepTest(unittest.TestCase):
