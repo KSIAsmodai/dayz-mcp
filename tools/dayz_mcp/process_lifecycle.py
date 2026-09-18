@@ -3595,7 +3595,7 @@ class ProcessLifecycle:
                     return payload
                 if (
                     run.state not in _ADOPTABLE_STATES
-                    or run.owner_session_id is not None
+                    or run.owner_session_id
                 ):
                     return self._reject_reserved(authority, command, "run_not_adoptable")
                 if any(

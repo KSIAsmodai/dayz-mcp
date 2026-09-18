@@ -532,6 +532,42 @@ class DaemonEndpointTest(unittest.TestCase):
         self.assertEqual(run.state, "RUNNING")
         self.assertEqual(run.owner_session_id, IDENTITY["session_id"])
 
+    def test_acquire_adopts_the_ownerless_unreconciled_run(self) -> None:
+        srv = self._daemon(adopt_fixture=False)
+        run = srv.state.lifecycle.manifest.get("test-run")
+        run.state = "UNRECONCILED"
+        srv.state.lifecycle.manifest.replace(run)
+        status, acquired = _http(
+            srv.base,
+            "POST",
+            "/session/acquire",
+            srv.key,
+            {"identity": IDENTITY, "purpose": "drive"},
+        )
+        self.assertEqual(status, 200, acquired)
+        self.assertEqual(acquired.get("status"), "active")
+        adopted = acquired.get("adopted_run")
+        self.assertIsInstance(adopted, dict, acquired)
+        self.assertEqual(
+            {k: adopted.get(k) for k in ("ok", "run_id", "state")},
+            {"ok": True, "run_id": "test-run", "state": "RUNNING"},
+        )
+        stored = srv.state.lifecycle.manifest.get("test-run")
+        self.assertEqual(stored.state, "RUNNING")
+        self.assertEqual(stored.owner_session_id, IDENTITY["session_id"])
+
+    def test_acquire_treats_empty_owner_session_as_ownerless_idle(self) -> None:
+        # session_status shows owner_session null for a falsy owner; grant
+        # used to skip that row and return adopted_run=null (632e).
+        row = SimpleNamespace(
+            state="RUNNING_IDLE", owner_session_id="", run_id="test-run"
+        )
+        acquired = self._acquire_with_rows([row])
+        adopted = acquired.get("adopted_run")
+        self.assertIsInstance(adopted, dict, acquired)
+        self.assertEqual(adopted.get("ok"), True, acquired)
+        self.assertEqual(adopted.get("run_id"), "test-run")
+
     def test_acquire_without_adoptable_run_declares_null(self) -> None:
         srv = self._daemon(adopt_fixture=False)
         run = srv.state.lifecycle.manifest.get("test-run")
