@@ -419,7 +419,6 @@ _ALREADY_GONE_ERRORS = frozenset(
     {
         "run_processes_gone",
         "run_not_found",
-        "run_not_active",
     }
 )
 

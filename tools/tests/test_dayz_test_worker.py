@@ -640,6 +640,72 @@ class DayzTestWorkerTests(unittest.TestCase):
             [item.payload.get("command") for item in exited.requests],
             ["adopt", "stop", "status"],
         )
+
+    def test_kill_does_not_treat_inactive_row_with_live_processes_as_gone(self) -> None:
+        run_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        self.assertNotIn("run_not_active", dayz_test_worker._ALREADY_GONE_ERRORS)
+        self.assertFalse(
+            dayz_test_worker._run_already_gone(
+                {"ok": False, "error": "run_not_active", "run_id": run_id},
+                run_id,
+            )
+        )
+        for state in ("STARTING", "STOPPING"):
+            with self.subTest(state=state):
+                self.assertFalse(
+                    dayz_test_worker._status_run_already_gone(
+                        {
+                            "runs": [
+                                {
+                                    "run_id": run_id,
+                                    "state": state,
+                                    "processes": [
+                                        {"pid": 4242, "role": "offline"}
+                                    ],
+                                }
+                            ]
+                        },
+                        run_id,
+                    )
+                )
+
+                class _NotActiveWithProcesses(_Broker):
+                    async def invoke(self, frame: bytes) -> dict[str, object]:
+                        request = native_broker_protocol.decode_request(frame)
+                        self.requests.append(request)
+                        command = request.payload.get("command")
+                        if command in {"adopt", "stop"}:
+                            return {
+                                "ok": False,
+                                "error": "run_not_active",
+                                "run_id": run_id,
+                            }
+                        if command == "status":
+                            return {
+                                "runs": [
+                                    {
+                                        "run_id": run_id,
+                                        "state": state,
+                                        "processes": [
+                                            {"pid": 4242, "role": "offline"}
+                                        ],
+                                    }
+                                ]
+                            }
+                        return await super().invoke(frame)
+
+                broker = _NotActiveWithProcesses()
+                with self.assertRaises(
+                    dayz_test_worker.DayzTestWorkerError
+                ) as raised:
+                    self._run(
+                        _raw(mode="offline", kill=True, run_id=run_id),
+                        broker,
+                    )
+                self.assertEqual(raised.exception.code, "run_not_adoptable")
+                self.assertFalse(raised.exception.cleanup_degraded)
+
+    def test_preflight_has_zero_child_and_ack_failure_stops_only_new_unacked_run(self) -> None:
         preflight = _Broker()
         result = self._run(
             _raw(mode="all", preflight=True, build=True, clean=True), preflight
