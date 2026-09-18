@@ -3294,9 +3294,13 @@ class Handler(BaseHTTPRequestHandler):
                     ):
                         unreadable = True
                         break
+                    # fb-20260918-140351-632e: session_status treats a falsy
+                    # owner as ownerless; grant must use the same rule or
+                    # adopted_run stays null on the unique orphan idle/unreconciled
+                    # run. UNRECONCILED is already in lifecycle _ADOPTABLE_STATES.
                     if (
-                        run.state == "RUNNING_IDLE"
-                        and run.owner_session_id is None
+                        run.state in {"RUNNING_IDLE", "UNRECONCILED"}
+                        and not run.owner_session_id
                     ):
                         idle.append(run)
             except Exception:
