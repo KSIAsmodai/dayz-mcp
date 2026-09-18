@@ -412,6 +412,58 @@ def _successful_run(result: dict[str, object], run_id: str, state: str) -> bool:
     )
 
 
+# fb-20260918-165857-744a: a stop whose processes are already gone used to
+# fail overall (run_stop_failed + cleanup_degraded) even when CIM later
+# showed no DayZDiag. Treat that observed-gone outcome as success.
+_ALREADY_GONE_ERRORS = frozenset(
+    {
+        "run_processes_gone",
+        "run_not_found",
+    }
+)
+
+
+def _run_already_gone(result: dict[str, object] | None, run_id: str) -> bool:
+    if result is None:
+        return False
+    if result.get("state") == "EXITED" and result.get("run_id") in {run_id, None}:
+        return True
+    error = result.get("error")
+    if error in _ALREADY_GONE_ERRORS:
+        return True
+    return result.get("stop_method") == "no_live_owned"
+
+
+def _status_run_already_gone(status: dict[str, object], run_id: str) -> bool:
+    runs = status.get("runs")
+    if not isinstance(runs, list):
+        return False
+    matches = [
+        item
+        for item in runs
+        if isinstance(item, dict) and item.get("run_id") == run_id
+    ]
+    if not matches:
+        return True
+    if len(matches) != 1:
+        return False
+    row = matches[0]
+    if row.get("state") == "EXITED":
+        return True
+    processes = row.get("processes")
+    if not isinstance(processes, list) or processes:
+        return False
+    return row.get("state") in {"UNRECONCILED", "STOPPING", "RUNNING_IDLE"}
+
+
+async def _status_already_gone(broker: Broker, run_id: str) -> bool:
+    try:
+        status = await _lifecycle(broker, "status", run_id=run_id)
+    except DayzTestWorkerError:
+        return False
+    return _status_run_already_gone(status, run_id)
+
+
 def _lifecycle_rejection(result: object) -> str | None:
     """The reason the daemon gave, when it is one the worker may republish.
 
@@ -631,20 +683,35 @@ async def execute_dayz_test_worker(
             adopted = await _lifecycle(broker, "adopt", run_id=run_id)
         except DayzTestWorkerError:
             adopted = None
+        if _run_already_gone(adopted, run_id):
+            return WorkerResult(0, run_id)
         if adopted is None or not _successful_run(adopted, run_id, "RUNNING"):
             try:
                 reconciled = await _lifecycle(broker, "stop", run_id=run_id)
             except DayzTestWorkerError:
                 raise _failed("run_not_adoptable") from None
-            if _successful_run(reconciled, run_id, "EXITED"):
+            if _successful_run(reconciled, run_id, "EXITED") or _run_already_gone(
+                reconciled, run_id
+            ):
                 return WorkerResult(0, run_id)
             raise _failed("run_not_adoptable")
-        result = await _lifecycle(broker, "stop", run_id=run_id)
-        if not _successful_run(result, run_id, "EXITED"):
+        try:
+            result = await _lifecycle(broker, "stop", run_id=run_id)
+        except DayzTestWorkerError:
+            if await _status_already_gone(broker, run_id):
+                return WorkerResult(0, run_id)
             raise _failed(
                 "run_stop_failed", run_id=run_id, cleanup_degraded=True
-            )
-        return WorkerResult(0, run_id)
+            ) from None
+        if _successful_run(result, run_id, "EXITED") or _run_already_gone(
+            result, run_id
+        ):
+            return WorkerResult(0, run_id)
+        if await _status_already_gone(broker, run_id):
+            return WorkerResult(0, run_id)
+        raise _failed(
+            "run_stop_failed", run_id=run_id, cleanup_degraded=True
+        )
     if payload["preflight"]:
         # Preflight must fail exactly where a real launch would: resolve the
         # mission now so an alias missing from this project's runtime is not

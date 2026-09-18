@@ -1928,10 +1928,28 @@ async def execute_dayz_test_stop(
                     and result.get("run_id") == run_id
                 ):
                     try:
-                        stopped = _exact_run(await runtime.lifecycle_status(), run_id)
+                        snapshot = await runtime.lifecycle_status()
                     except Exception:
                         return result
-                    if stopped.get("state") == "EXITED":
+                    try:
+                        stopped = _exact_run(snapshot, run_id)
+                    except DayzTestToolError as exc:
+                        # fb-20260918-165857-744a: a reaped/missing row after
+                        # the worker already tried to stop is success, not a
+                        # leftover DayZ process.
+                        if exc.code == "run_not_found":
+                            result.update(
+                                status="succeeded",
+                                phase="completed",
+                                error_code=None,
+                                cleanup_degraded=False,
+                            )
+                        return result
+                    except Exception:
+                        return result
+                    processes = stopped.get("processes")
+                    processes_gone = isinstance(processes, list) and not processes
+                    if stopped.get("state") == "EXITED" or processes_gone:
                         result.update(
                             status="succeeded",
                             phase="completed",
