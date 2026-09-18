@@ -591,7 +591,55 @@ class DayzTestWorkerTests(unittest.TestCase):
         self.assertTrue(failed.exception.cleanup_degraded)
         self.assertEqual(failed.exception.run_id, run_id)
 
-    def test_preflight_has_zero_child_and_ack_failure_stops_only_new_unacked_run(self) -> None:
+    def test_kill_treats_already_gone_processes_as_success(self) -> None:
+        run_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+
+        class _GoneOnAdopt(_Broker):
+            async def invoke(self, frame: bytes) -> dict[str, object]:
+                request = native_broker_protocol.decode_request(frame)
+                self.requests.append(request)
+                if request.payload.get("command") == "adopt":
+                    return {
+                        "ok": False,
+                        "error": "run_processes_gone",
+                        "run_id": run_id,
+                    }
+                return await super().invoke(frame)
+
+        gone = self._run(_raw(mode="offline", kill=True, run_id=run_id), _GoneOnAdopt())
+        self.assertEqual(gone.exit_code, 0)
+        self.assertEqual(gone.run_id, run_id)
+
+        class _StopFailedThenExited(_Broker):
+            async def invoke(self, frame: bytes) -> dict[str, object]:
+                request = native_broker_protocol.decode_request(frame)
+                command = request.payload.get("command")
+                if command == "status":
+                    self.requests.append(request)
+                    return {
+                        "runs": [
+                            {
+                                "run_id": run_id,
+                                "state": "EXITED",
+                                "processes": [],
+                            }
+                        ]
+                    }
+                if command == "stop":
+                    self.requests.append(request)
+                    return {"ok": False, "error": "run_stop_failed", "run_id": run_id}
+                return await super().invoke(frame)
+
+        exited = _StopFailedThenExited()
+        recovered = self._run(
+            _raw(mode="offline", kill=True, run_id=run_id), exited
+        )
+        self.assertEqual(recovered.exit_code, 0)
+        self.assertEqual(recovered.run_id, run_id)
+        self.assertEqual(
+            [item.payload.get("command") for item in exited.requests],
+            ["adopt", "stop", "status"],
+        )
         preflight = _Broker()
         result = self._run(
             _raw(mode="all", preflight=True, build=True, clean=True), preflight

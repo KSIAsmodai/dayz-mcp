@@ -1756,6 +1756,109 @@ class DayzTestExecutionTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["error_code"])
         self.assertFalse(result["cleanup_degraded"])
 
+    async def test_stop_treats_empty_processes_after_run_stop_failed_as_success(
+        self,
+    ) -> None:
+        lfv = _policy(
+            mod="StorageMod",
+            dev_root=r"C:\Tools\LFV_D2_Executor",
+            default_source=r"C:\Tools\LFV_D2_Executor\staged-source\StorageMod",
+            default_base_mods=("@CF",),
+        )
+        active = {
+            "run_id": RUN_ID,
+            "state": "RUNNING_IDLE",
+            "mod": "@StorageMod",
+            "profiles": r"C:\Tools\LFV_D2_Executor\_client\profiles",
+        }
+        gone = {**active, "state": "UNRECONCILED", "processes": []}
+        runtime = _Runtime()
+        runtime.lifecycle_status = AsyncMock(
+            side_effect=({"runs": [active]}, {"runs": [gone]})
+        )
+
+        async def launch(_raw_request: bytes, **kwargs: object) -> int:
+            kwargs["output_sink"](
+                "stdout",
+                _terminal(
+                    {
+                        "cleanup_degraded": True,
+                        "error_code": "run_stop_failed",
+                        "exit_code": 2,
+                        "ok": False,
+                        "run_id": RUN_ID,
+                    }
+                ),
+            )
+            return 2
+
+        with patch.object(
+            dayz_test_tool, "open_approved_launcher", return_value=_Opened()
+        ), patch.object(
+            dayz_test_tool.secure_launcher,
+            "load_verified_bundle",
+            return_value=_Bundle(_sealed(lfv)),
+        ), patch.object(
+            dayz_test_tool.secure_launcher,
+            "execute_secure_launcher_request",
+            side_effect=launch,
+        ):
+            result = await dayz_test_tool.execute_dayz_test_stop(runtime, RUN_ID)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertIsNone(result["error_code"])
+        self.assertFalse(result["cleanup_degraded"])
+
+    async def test_stop_treats_reaped_row_after_run_stop_failed_as_success(self) -> None:
+        lfv = _policy(
+            mod="StorageMod",
+            dev_root=r"C:\Tools\LFV_D2_Executor",
+            default_source=r"C:\Tools\LFV_D2_Executor\staged-source\StorageMod",
+            default_base_mods=("@CF",),
+        )
+        active = {
+            "run_id": RUN_ID,
+            "state": "RUNNING_IDLE",
+            "mod": "@StorageMod",
+            "profiles": r"C:\Tools\LFV_D2_Executor\_client\profiles",
+        }
+        runtime = _Runtime()
+        runtime.lifecycle_status = AsyncMock(
+            side_effect=({"runs": [active]}, {"runs": []})
+        )
+
+        async def launch(_raw_request: bytes, **kwargs: object) -> int:
+            kwargs["output_sink"](
+                "stdout",
+                _terminal(
+                    {
+                        "cleanup_degraded": True,
+                        "error_code": "run_stop_failed",
+                        "exit_code": 2,
+                        "ok": False,
+                        "run_id": RUN_ID,
+                    }
+                ),
+            )
+            return 2
+
+        with patch.object(
+            dayz_test_tool, "open_approved_launcher", return_value=_Opened()
+        ), patch.object(
+            dayz_test_tool.secure_launcher,
+            "load_verified_bundle",
+            return_value=_Bundle(_sealed(lfv)),
+        ), patch.object(
+            dayz_test_tool.secure_launcher,
+            "execute_secure_launcher_request",
+            side_effect=launch,
+        ):
+            result = await dayz_test_tool.execute_dayz_test_stop(runtime, RUN_ID)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertIsNone(result["error_code"])
+        self.assertFalse(result["cleanup_degraded"])
+
     async def test_worker_failed_carries_lifecycle_start_error(self) -> None:
         policy = _policy()
         runtime = _Runtime(
