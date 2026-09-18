@@ -10,6 +10,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -926,6 +929,170 @@ def probe_input_desktop() -> str:
         return "unlocked"
     except Exception:
         return "unknown"
+
+
+# fb-20260918-134756-05a0 / c0e5: refuse a capture tandem before the first
+# run when the host desktop is locked or the framebuffer is all-black.
+PRERUN_DESKTOP_TIMEOUT_S = 30.0
+PRERUN_DESKTOP_POLL_S = 1.0
+PRERUN_BRIGHTNESS_TIMEOUT_S = 2.0
+DESKTOP_BLACK_MEAN = 1.0
+DESKTOP_BLACK_NONBLACK = 0.01
+SESSION_LOCKED = "session_locked"
+DESKTOP_ALL_BLACK = "desktop_all_black"
+DESKTOP_PROBE_TIMEOUT = "desktop_probe_timeout"
+DESKTOP_PROBE_FAILED = "desktop_probe_failed"
+DESKTOP_PROBE_UNSUPPORTED = "desktop_probe_unsupported"
+REMEDIATION_SESSION_LOCKED = (
+    "Unlock the Windows session (Win+L lock screen / sleep / closed lid). "
+    "Window-grab cannot see pixels until the interactive desktop is reachable; "
+    "a capture tandem would return frame_client_all_black."
+)
+REMEDIATION_DESKTOP_ALL_BLACK = (
+    "Host desktop screenshot is all-black. Wake the display or unlock the "
+    "session before starting a capture tandem; otherwise capture_screenshot "
+    "will return frame_client_all_black."
+)
+REMEDIATION_DESKTOP_PROBE_TIMEOUT = (
+    "Desktop brightness probe did not finish in time. The host display may be "
+    "asleep or the session locked; unlock/wake and retry before a capture tandem."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PrerunDesktopResult:
+    """Verdict of the pre-run desktop unlock + brightness gate."""
+
+    error_code: str | None
+    desktop: str
+    mean_brightness: float | None
+    nonblack_ratio: float | None
+    waited_s: float
+    remediation: str
+
+
+def _desktop_is_black(mean_brightness: float, nonblack_ratio: float) -> bool:
+    return (
+        mean_brightness <= DESKTOP_BLACK_MEAN
+        and nonblack_ratio <= DESKTOP_BLACK_NONBLACK
+    )
+
+
+def probe_desktop_brightness(
+    timeout_s: float = PRERUN_BRIGHTNESS_TIMEOUT_S,
+) -> dict[str, Any]:
+    """Cheap host-desktop grab. No DayZ window required.
+
+    A confirmed image uses the same black thresholds as grab_stable_frame
+    (meanBrightness <= 1 and nonBlackRatio <= 0.01). Non-Windows hosts return
+    desktop_probe_unsupported so the pre-run gate does not block them.
+    """
+    if sys.platform != "win32":
+        return {"ok": False, "error": DESKTOP_PROBE_UNSUPPORTED}
+    try:
+        from PIL import ImageGrab
+
+        def _grab() -> dict[str, Any]:
+            image = ImageGrab.grab()
+            stats = image_stats_from_image(image)
+            return {
+                "ok": True,
+                "mean_brightness": float(stats["meanBrightness"]),
+                "nonblack_ratio": float(stats["nonBlackRatio"]),
+            }
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_grab).result(timeout=max(0.05, float(timeout_s)))
+    except FuturesTimeout:
+        return {"ok": False, "error": DESKTOP_PROBE_TIMEOUT}
+    except Exception:
+        return {"ok": False, "error": DESKTOP_PROBE_FAILED}
+
+
+def run_prerun_desktop_gate(
+    *,
+    timeout_s: float = PRERUN_DESKTOP_TIMEOUT_S,
+    poll_s: float = PRERUN_DESKTOP_POLL_S,
+    wait: bool = True,
+    clock: Any = time.monotonic,
+    sleeper: Any = time.sleep,
+    probe_desktop: Any = probe_input_desktop,
+    probe_brightness: Any = probe_desktop_brightness,
+    brightness_timeout_s: float = PRERUN_BRIGHTNESS_TIMEOUT_S,
+) -> PrerunDesktopResult:
+    """Wait up to timeout_s for an unlocked desktop and a non-black screenshot.
+
+    Locked sessions never call the brightness grab (ImageGrab can hang there).
+    A confirmed all-black framebuffer is desktop_all_black. An unsupported or
+    failed grab does not block: only lock and confirmed black abort a tandem.
+    """
+    started = float(clock())
+    deadline = started + max(0.0, float(timeout_s))
+    last_error = DESKTOP_PROBE_FAILED
+    last_desktop = "unknown"
+    last_mean: float | None = None
+    last_nonblack: float | None = None
+    last_remediation = REMEDIATION_DESKTOP_ALL_BLACK
+
+    while True:
+        desktop = str(probe_desktop() or "unknown")
+        last_desktop = desktop
+        if desktop == "locked":
+            last_error = SESSION_LOCKED
+            last_remediation = REMEDIATION_SESSION_LOCKED
+            last_mean = None
+            last_nonblack = None
+        else:
+            bright = probe_brightness(timeout_s=brightness_timeout_s)
+            if not isinstance(bright, dict):
+                bright = {"ok": False, "error": DESKTOP_PROBE_FAILED}
+            if bright.get("ok") is True:
+                mean = float(bright["mean_brightness"])
+                nonblack = float(bright["nonblack_ratio"])
+                last_mean = mean
+                last_nonblack = nonblack
+                if not _desktop_is_black(mean, nonblack):
+                    return PrerunDesktopResult(
+                        error_code=None,
+                        desktop=desktop,
+                        mean_brightness=mean,
+                        nonblack_ratio=nonblack,
+                        waited_s=round(float(clock()) - started, 3),
+                        remediation="",
+                    )
+                last_error = DESKTOP_ALL_BLACK
+                last_remediation = REMEDIATION_DESKTOP_ALL_BLACK
+            else:
+                err = str(bright.get("error") or DESKTOP_PROBE_FAILED)
+                if err in {DESKTOP_PROBE_UNSUPPORTED, DESKTOP_PROBE_FAILED}:
+                    return PrerunDesktopResult(
+                        error_code=None,
+                        desktop=desktop,
+                        mean_brightness=None,
+                        nonblack_ratio=None,
+                        waited_s=round(float(clock()) - started, 3),
+                        remediation="",
+                    )
+                last_error = err
+                last_mean = None
+                last_nonblack = None
+                if err == DESKTOP_PROBE_TIMEOUT:
+                    last_remediation = REMEDIATION_DESKTOP_PROBE_TIMEOUT
+                else:
+                    last_remediation = REMEDIATION_DESKTOP_ALL_BLACK
+
+        now = float(clock())
+        if (not wait) or now >= deadline:
+            return PrerunDesktopResult(
+                error_code=last_error,
+                desktop=last_desktop,
+                mean_brightness=last_mean,
+                nonblack_ratio=last_nonblack,
+                waited_s=round(now - started, 3),
+                remediation=last_remediation,
+            )
+        remaining = deadline - now
+        sleeper(min(max(0.0, float(poll_s)), remaining))
 
 
 def _grab_subprocess_env(base: dict[str, str] | None = None) -> dict[str, str]:

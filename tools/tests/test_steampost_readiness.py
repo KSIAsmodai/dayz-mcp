@@ -361,6 +361,18 @@ class SteamBranchEnvelopeTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(error_code=None, missing=(), warnings=(), hint="")))
         self.enterContext(patch.object(self.tool, "evaluate_steam_session", return_value=
             sp.SteamSessionResult("steam_session_stale", 99, (41,), sp.REMEDIATION)))
+        self.enterContext(patch.object(
+            self.tool,
+            "evaluate_prerun_desktop",
+            return_value=__import__("mcp_capture").PrerunDesktopResult(
+                error_code=None,
+                desktop="unlocked",
+                mean_brightness=80.0,
+                nonblack_ratio=0.9,
+                waited_s=0.01,
+                remediation="",
+            ),
+        ))
         self.launch = self.enterContext(patch.object(
             self.tool, "_execute_request", new=AsyncMock(return_value={"status": "succeeded"})
         ))

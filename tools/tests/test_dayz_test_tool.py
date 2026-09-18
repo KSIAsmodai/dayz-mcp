@@ -14,6 +14,7 @@ from dayz_mcp import native_launcher_transaction
 from dayz_mcp import dayz_test_tool
 from dayz_mcp import server
 from dayz_mcp import steam_preflight
+import mcp_capture
 from dayz_mcp.control_client import ControlClientError
 
 
@@ -763,6 +764,20 @@ class DayzTestExecutionTest(unittest.IsolatedAsyncioTestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        desktop_patcher = patch.object(
+            dayz_test_tool,
+            "evaluate_prerun_desktop",
+            return_value=mcp_capture.PrerunDesktopResult(
+                error_code=None,
+                desktop="unlocked",
+                mean_brightness=80.0,
+                nonblack_ratio=0.9,
+                waited_s=0.01,
+                remediation="",
+            ),
+        )
+        desktop_patcher.start()
+        self.addCleanup(desktop_patcher.stop)
         # ficha df93: the admin-tools preflight verifies the tools a request
         # asks for and warns when it asks for none. These fixtures are policies
         # and stubs, not a server workspace, so the gate is neutralised here

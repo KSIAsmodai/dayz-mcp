@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dayz_mcp import dayz_test_tool as tool, steam_preflight as steam
+import mcp_capture
 from tests import test_dayz_test_tool as fixtures
 from tests.test_steam_preflight import _MutableSteamProvider
 
@@ -31,6 +32,18 @@ class Db05DiagnosticsTest(unittest.IsolatedAsyncioTestCase):
                     return_value=fixtures._Bundle(fixtures._sealed(self.policy)))
         self._patch(tool, "preflight_vpp_request", return_value=self.vpp)
         self._patch(tool.secure_launcher, "execute_secure_launcher_request", new=self.launch)
+        self._patch(
+            tool,
+            "evaluate_prerun_desktop",
+            return_value=mcp_capture.PrerunDesktopResult(
+                error_code=None,
+                desktop="unlocked",
+                mean_brightness=80.0,
+                nonblack_ratio=0.9,
+                waited_s=0.01,
+                remediation="",
+            ),
+        )
 
     def _patch(self, owner, name, **kwargs):
         patcher = patch.object(owner, name, **kwargs)

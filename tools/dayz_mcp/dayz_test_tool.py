@@ -29,6 +29,21 @@ from dayz_mcp.steam_preflight import (
     SteamSessionResult,
     evaluate_steam_session,
 )
+
+
+def evaluate_prerun_desktop(timeout_s: float | None = None):
+    """Host desktop unlock + brightness probe before a client-starting run.
+
+    fb-20260918-134756-05a0 / c0e5: refuse a capture tandem when the
+    interactive desktop is locked or the framebuffer is all-black.
+    """
+    import mcp_capture
+
+    if timeout_s is None:
+        return mcp_capture.run_prerun_desktop_gate()
+    return mcp_capture.run_prerun_desktop_gate(timeout_s=timeout_s)
+
+
 _BRIDGE_MOD_NAMES = frozenset({"dayz_mcp", "@dayz_mcp"})
 # fb-20260909-213257-49a9: the token stays the prefix so existing matchers
 # keep working; the suffix names the accepted extra_mods form.
@@ -1484,6 +1499,29 @@ async def execute_dayz_test_run(
                 if preflight:
                     refused["preflight_skipped_checks"] = preflight_skipped_checks
                 return refused
+            if _mode_starts_client(mode):
+                desktop = evaluate_prerun_desktop()
+                if desktop.error_code is not None:
+                    refused = _compact_result(
+                        terminal=WorkerTerminal(
+                            cleanup_degraded=False,
+                            error_code=desktop.error_code,
+                            exit_code=1,
+                            ok=False,
+                            run_id=None,
+                        ),
+                        project=policy.mod,
+                        mode=mode,
+                        started_at=started_at,
+                        artifacts_paths=[],
+                        phase="validating",
+                        remediation=desktop.remediation,
+                        vpp_missing=list(vpp.missing),
+                        vpp_warnings=list(vpp.warnings),
+                    )
+                    if preflight:
+                        refused["preflight_skipped_checks"] = preflight_skipped_checks
+                    return refused
             if not preflight and _mode_starts_client(mode):
                 try:
                     steam = evaluate_steam_session()

@@ -144,6 +144,15 @@ Exceptional `python -m dayz_mcp.admin_cli` release/reconcile operations require 
 
 Short call sequences for a cold consumer. Use `playbook_run(name, params)` for a named checklist; CLI runner usage is in [`playbooks/README.md`](../playbooks/README.md).
 
+### Capture tandems (step 0)
+
+Before `dayz_test_run(mode=all)` plus `capture_screenshot`, the host desktop must be interactive and not all-black. `dayz_test_run` waits up to 30 s on a client-starting run (including preflight), then aborts:
+
+- `session_locked` — Windows session locked or on the secure desktop.
+- `desktop_all_black` — desktop screenshot `meanBrightness<=1` and `nonBlackRatio<=0.01` (sleep / closed lid / display off).
+
+Do not start a capture tandem after `frame_client_all_black`; that error is the in-run symptom of the same host state. Unlock or wake the host and retry `dayz_test_run`.
+
 ### Wait for a player
 
 1. `session_status()` — confirm the lease is claimable (no blocking owner) and read `box` (occupied runs/foreign/ports) before launching.
