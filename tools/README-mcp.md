@@ -150,6 +150,8 @@ Before `dayz_test_run(mode=all)` plus `capture_screenshot`, the host desktop mus
 
 - `session_locked` — Windows session locked or on the secure desktop.
 - `desktop_all_black` — desktop screenshot `meanBrightness<=1` and `nonBlackRatio<=0.01` (sleep / closed lid / display off).
+- `desktop_probe_timeout` — the brightness probe did not finish inside the 30 s budget (hung/asleep grab).
+- `desktop_probe_failed` — Windows grab raised; launch is refused. Non-Windows `desktop_probe_unsupported` does not block.
 
 Do not start a capture tandem after `frame_client_all_black`; that error is the in-run symptom of the same host state. Unlock or wake the host and retry `dayz_test_run`.
 

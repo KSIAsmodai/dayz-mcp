@@ -6344,7 +6344,7 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
         "(PrintWindow, then CopyFromScreen; no SetForegroundWindow) because focus theft "
         "has killed the live client (ficha 8f76). "
         "session_locked means the Windows session is locked: both window-grab backends need the interactive desktop, retrying does not help until the session is unlocked, so unattended runs must keep it unlocked. "
-        "dayz_test_run waits up to 30 s for an unlocked non-black host desktop before launching a client (session_locked / desktop_all_black) so a capture tandem does not burn runs only to return frame_client_all_black. "
+        "dayz_test_run waits up to 30 s for an unlocked non-black host desktop before launching a client (session_locked / desktop_all_black / desktop_probe_timeout / desktop_probe_failed) so a capture tandem does not burn runs only to return frame_client_all_black. Non-Windows desktop_probe_unsupported does not block. "
         "An unfocused DayZDiag client renders at about 20 fps, so client-side timing depends on which window owns the foreground. "
         "Without window focus, the frame can be frozen: frame_stale (bool | null) declares it. true means these "
         "pixels repeat the previous capture of the same window, false that the render advanced, and null that no comparison was possible (first capture, an "

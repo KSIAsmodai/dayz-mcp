@@ -14,7 +14,7 @@ Merged to `main` after [v1.2](https://github.com/willy92wins/dayz-mcp/releases/t
 - `vehicle_trace` samples carry `engine_rpm`, `rpm_idle`, `engine_ready` and `throttle_set`, and `classify_14de_throttle_sample` tells an engine-ready skip from setter lag; JSON `1`/`0` count as booleans (#36, #42).
 - `dayz_test_run` results carry `caller_tool_registry_stale`; when it is true they also warn `tool_registry_stale_reopen_client` (#46).
 - New runs record `daemon_generation_at_launch`; status, box and `dayz_test_stop` report `daemon_generation_current` and `generation_changed` (#47).
-- `dayz_test_run` waits up to 30 s for an unlocked, non-black host desktop before launching a client; `session_locked` / `desktop_all_black` abort the tandem so it does not burn runs only to return `frame_client_all_black` (fb-20260918-134756-05a0, fb-20260918-134756-c0e5).
+- `dayz_test_run` waits up to 30 s for an unlocked, non-black host desktop before launching a client; `session_locked` / `desktop_all_black` / `desktop_probe_timeout` / `desktop_probe_failed` abort the tandem so it does not burn runs only to return `frame_client_all_black`. Non-Windows `desktop_probe_unsupported` does not block (fb-20260918-134756-05a0, fb-20260918-134756-c0e5).
 
 ### Changed
 

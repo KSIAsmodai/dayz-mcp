@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -51,6 +55,17 @@ def _locked_desktop() -> mcp_capture.PrerunDesktopResult:
         nonblack_ratio=None,
         waited_s=30.0,
         remediation=mcp_capture.REMEDIATION_SESSION_LOCKED,
+    )
+
+
+def _failed_desktop() -> mcp_capture.PrerunDesktopResult:
+    return mcp_capture.PrerunDesktopResult(
+        error_code=mcp_capture.DESKTOP_PROBE_FAILED,
+        desktop="unlocked",
+        mean_brightness=None,
+        nonblack_ratio=None,
+        waited_s=30.0,
+        remediation=mcp_capture.REMEDIATION_DESKTOP_PROBE_FAILED,
     )
 
 
@@ -172,17 +187,67 @@ class PrerunDesktopGateTest(unittest.TestCase):
         self.assertIsNone(result.error_code)
         self.assertEqual(sleeps, [])
 
-    def test_probe_failed_does_not_block(self) -> None:
+    def test_probe_failed_retries_then_fail_closed(self) -> None:
+        now = {"t": 0.0}
+
+        def clock() -> float:
+            return now["t"]
+
+        def sleeper(delta: float) -> None:
+            now["t"] = now["t"] + delta
+
         result = mcp_capture.run_prerun_desktop_gate(
+            timeout_s=30,
+            poll_s=10,
             probe_desktop=lambda: "unlocked",
             probe_brightness=lambda **_kwargs: {
                 "ok": False,
                 "error": "desktop_probe_failed",
             },
-            sleeper=lambda _delta: None,
+            sleeper=sleeper,
+            clock=clock,
+        )
+        self.assertEqual(result.error_code, "desktop_probe_failed")
+        self.assertIn("refused", result.remediation)
+        self.assertIn("frame_client_all_black", result.remediation)
+        self.assertGreaterEqual(result.waited_s, 30.0)
+
+    def test_wait_false_probe_failed_fail_closed(self) -> None:
+        sleeps: list[float] = []
+        result = mcp_capture.run_prerun_desktop_gate(
+            wait=False,
+            probe_desktop=lambda: "unlocked",
+            probe_brightness=lambda **_kwargs: {
+                "ok": False,
+                "error": "desktop_probe_failed",
+            },
+            sleeper=sleeps.append,
             clock=lambda: 0.0,
         )
-        self.assertIsNone(result.error_code)
+        self.assertEqual(result.error_code, "desktop_probe_failed")
+        self.assertEqual(sleeps, [])
+
+    def test_bright_probe_after_deadline_is_rejected(self) -> None:
+        now = {"t": 0.0}
+
+        def clock() -> float:
+            return now["t"]
+
+        def bright_late(**_kwargs: object) -> dict[str, object]:
+            now["t"] = now["t"] + 0.10
+            return _bright()
+
+        result = mcp_capture.run_prerun_desktop_gate(
+            timeout_s=0.05,
+            poll_s=1.0,
+            probe_desktop=lambda: "unlocked",
+            probe_brightness=bright_late,
+            sleeper=lambda _delta: None,
+            clock=clock,
+        )
+        self.assertEqual(result.error_code, "desktop_probe_timeout")
+        self.assertIsNotNone(result.mean_brightness)
+        self.assertGreaterEqual(result.waited_s, 0.05)
 
     def test_wait_false_aborts_immediately_when_locked(self) -> None:
         sleeps: list[float] = []
@@ -236,18 +301,44 @@ class PrerunDesktopGateTest(unittest.TestCase):
         self.assertGreater(float(result["mean_brightness"]), 1.0)
         self.assertGreater(float(result["nonblack_ratio"]), 0.01)
 
-    def test_probe_desktop_brightness_timeout_token(self) -> None:
-        def hang(*_args: object, **_kwargs: object) -> Image.Image:
-            raise mcp_capture.FuturesTimeout()
+    def test_probe_desktop_brightness_timeout_does_not_wait_for_slow_worker(self) -> None:
+        def slow_grab() -> Image.Image:
+            time.sleep(0.25)
+            return Image.new("RGB", (16, 16), (80, 80, 80))
 
         with mock.patch.object(mcp_capture.sys, "platform", "win32"):
-            with mock.patch(
-                "mcp_capture.ThreadPoolExecutor"
-            ) as pool_cls:
-                pool = pool_cls.return_value.__enter__.return_value
-                pool.submit.return_value.result.side_effect = hang
+            with mock.patch("PIL.ImageGrab.grab", side_effect=slow_grab):
+                started = time.monotonic()
                 result = mcp_capture.probe_desktop_brightness(timeout_s=0.05)
+                elapsed = time.monotonic() - started
         self.assertEqual(result, {"ok": False, "error": "desktop_probe_timeout"})
+        self.assertLess(elapsed, 0.18)
+
+    def test_probe_desktop_brightness_hung_worker_returns_at_timeout(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def hung_grab() -> Image.Image:
+            started.set()
+            release.wait(10.0)
+            return Image.new("RGB", (16, 16), (80, 80, 80))
+
+        with mock.patch.object(mcp_capture.sys, "platform", "win32"):
+            with mock.patch("PIL.ImageGrab.grab", side_effect=hung_grab):
+                t0 = time.monotonic()
+                result = mcp_capture.probe_desktop_brightness(timeout_s=0.08)
+                elapsed = time.monotonic() - t0
+        release.set()
+        self.assertTrue(started.wait(1.0))
+        self.assertEqual(result, {"ok": False, "error": "desktop_probe_timeout"})
+        self.assertLess(elapsed, 0.4)
+        self.assertGreaterEqual(elapsed, 0.05)
+
+    def test_probe_desktop_brightness_grab_exception_is_failed(self) -> None:
+        with mock.patch.object(mcp_capture.sys, "platform", "win32"):
+            with mock.patch("PIL.ImageGrab.grab", side_effect=OSError("boom")):
+                result = mcp_capture.probe_desktop_brightness()
+        self.assertEqual(result, {"ok": False, "error": "desktop_probe_failed"})
 
 
 class PrerunDesktopDayzTestRunTest(unittest.IsolatedAsyncioTestCase):
@@ -404,6 +495,104 @@ class PrerunDesktopDayzTestRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["run_id"], RUN_ID)
 
+    async def test_windows_probe_failed_refuses_before_launch(self) -> None:
+        policy = _policy()
+        launch = AsyncMock()
+        with patch.object(
+            dayz_test_tool, "open_approved_launcher", return_value=_Opened()
+        ), patch.object(
+            dayz_test_tool.secure_launcher,
+            "load_verified_bundle",
+            return_value=_Bundle(_sealed(policy)),
+        ), patch.object(
+            dayz_test_tool.secure_launcher,
+            "execute_secure_launcher_request",
+            new=launch,
+        ), patch.object(
+            dayz_test_tool, "evaluate_prerun_desktop", return_value=_failed_desktop()
+        ):
+            result = await dayz_test_tool.execute_dayz_test_run(
+                _Runtime(),
+                project="ExampleMod",
+                mode="all",
+                extra_mods=["@DayZ_MCP"],
+            )
+
+        launch.assert_not_awaited()
+        self.assertEqual(result["status"], "failed")
+        self.assertIsNone(result["run_id"])
+        self.assertEqual(result["phase"], "validating")
+        self.assertEqual(result["error_code"], "desktop_probe_failed")
+        self.assertIn("refused", str(result["remediation"]))
+
+    async def test_heartbeat_progresses_during_gate_wait(self) -> None:
+        ticks = {"n": 0}
+
+        async def heartbeat() -> None:
+            while True:
+                ticks["n"] = ticks["n"] + 1
+                await asyncio.sleep(0.01)
+
+        task = asyncio.create_task(heartbeat())
+        try:
+            result = await asyncio.to_thread(
+                mcp_capture.run_prerun_desktop_gate,
+                timeout_s=0.12,
+                poll_s=0.04,
+                probe_desktop=lambda: "locked",
+                probe_brightness=_bright,
+            )
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self.assertEqual(result.error_code, "session_locked")
+        self.assertGreaterEqual(ticks["n"], 3)
+
+    async def test_execute_path_keeps_event_loop_alive_during_gate(self) -> None:
+        def blocking_gate(*_args: object, **_kwargs: object) -> mcp_capture.PrerunDesktopResult:
+            time.sleep(0.12)
+            return _locked_desktop()
+
+        ticks = {"n": 0}
+
+        async def heartbeat() -> None:
+            while True:
+                ticks["n"] = ticks["n"] + 1
+                await asyncio.sleep(0.01)
+
+        policy = _policy()
+        launch = AsyncMock()
+        task = asyncio.create_task(heartbeat())
+        try:
+            with patch.object(
+                dayz_test_tool, "open_approved_launcher", return_value=_Opened()
+            ), patch.object(
+                dayz_test_tool.secure_launcher,
+                "load_verified_bundle",
+                return_value=_Bundle(_sealed(policy)),
+            ), patch.object(
+                dayz_test_tool.secure_launcher,
+                "execute_secure_launcher_request",
+                new=launch,
+            ), patch.object(
+                dayz_test_tool, "evaluate_prerun_desktop", side_effect=blocking_gate
+            ):
+                result = await dayz_test_tool.execute_dayz_test_run(
+                    _Runtime(),
+                    project="ExampleMod",
+                    mode="all",
+                    extra_mods=["@DayZ_MCP"],
+                )
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        launch.assert_not_awaited()
+        self.assertEqual(result["error_code"], "session_locked")
+        self.assertGreaterEqual(ticks["n"], 3)
+
 
 class PrerunDesktopDescriptionTest(unittest.TestCase):
     def test_readme_names_capture_tandem_step_zero(self) -> None:
@@ -412,6 +601,9 @@ class PrerunDesktopDescriptionTest(unittest.TestCase):
         self.assertIn("### Capture tandems (step 0)", text)
         self.assertIn("session_locked", text)
         self.assertIn("desktop_all_black", text)
+        self.assertIn("desktop_probe_timeout", text)
+        self.assertIn("desktop_probe_failed", text)
+        self.assertIn("desktop_probe_unsupported", text)
         self.assertIn("frame_client_all_black", text)
 
     def test_capture_screenshot_description_names_the_prerun_gate(self) -> None:
@@ -421,6 +613,8 @@ class PrerunDesktopDescriptionTest(unittest.TestCase):
         description = text[start:end]
         self.assertIn("dayz_test_run waits up to 30 s", description)
         self.assertIn("desktop_all_black", description)
+        self.assertIn("desktop_probe_timeout", description)
+        self.assertIn("desktop_probe_failed", description)
         self.assertIn("frame_client_all_black", description)
 
 

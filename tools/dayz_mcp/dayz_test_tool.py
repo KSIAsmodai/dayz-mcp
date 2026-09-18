@@ -35,7 +35,8 @@ def evaluate_prerun_desktop(timeout_s: float | None = None):
     """Host desktop unlock + brightness probe before a client-starting run.
 
     fb-20260918-134756-05a0 / c0e5: refuse a capture tandem when the
-    interactive desktop is locked or the framebuffer is all-black.
+    interactive desktop is locked, the framebuffer is all-black, or (on
+    Windows) the brightness probe fails or times out.
     """
     import mcp_capture
 
@@ -1500,7 +1501,9 @@ async def execute_dayz_test_run(
                     refused["preflight_skipped_checks"] = preflight_skipped_checks
                 return refused
             if _mode_starts_client(mode):
-                desktop = evaluate_prerun_desktop()
+                # Gate body uses time.sleep / ImageGrab join. Run it off the
+                # broker event loop so other MCP sessions keep heartbeating.
+                desktop = await asyncio.to_thread(evaluate_prerun_desktop)
                 if desktop.error_code is not None:
                     refused = _compact_result(
                         terminal=WorkerTerminal(
