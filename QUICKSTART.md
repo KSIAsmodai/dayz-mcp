@@ -50,6 +50,8 @@ profiles folder the server actually uses), or `version_mismatch` (repack the PBO
 
 For lease cadences (heartbeat 45 s vs TTL 120 s) and coordination details, see [tools/README-mcp.md#lease-cadences](tools/README-mcp.md#lease-cadences).
 
+If you need the installer `--client` on stdin/stdout instead of the host MCP channel, spawn that registered process (plan B) and close it at handoff: [tools/README-mcp.md#host-vsock-failure-official-stdio-plan-b](tools/README-mcp.md#host-vsock-failure-official-stdio-plan-b). Host-only policy (when a host transport is dead for the rest of a session) lives in the host runbook, not here.
+
 Not needed for any of this: the native launcher, `dayz_test_run`, and the launcher
 registry — those let the agent *start* the game itself. [README.md](README.md) covers
 them, the run modes, the security model, and what this project cannot do.

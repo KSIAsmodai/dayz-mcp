@@ -190,6 +190,9 @@ Three run modes (`python -m dayz_mcp`; `tools/dayz_mcp/server_cli.py:66-88`):
 
 - `--client` — what the installer registers. Does not bind; proxies to the daemon
   and starts it lazily. Lets several agent sessions share one running game.
+  It is also the official stdio fallback (plan B): spawn the same process the
+  installer registers, speak MCP JSON-RPC on stdin/stdout, and close it at
+  session end. See [tools/README-mcp.md#host-vsock-failure-official-stdio-plan-b](tools/README-mcp.md#host-vsock-failure-official-stdio-plan-b).
 - `--daemon` — the single owner of the port; the only process that talks to the game.
 - no flag — embedded single-session mode.
 

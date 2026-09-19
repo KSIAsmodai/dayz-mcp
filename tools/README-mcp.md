@@ -186,8 +186,49 @@ These mailbox tools work with no game and no daemon.
 2. `pipeline_feedback(kind="bug", title="...", body="...", project="")` — `kind` is `bug`, `request`, `finding`, or `tool_contribution`. `title` ≤ 120 characters; `body` ≤ 8000. Body template: `tool / args / error / repro`. Returns `id` `fb-YYYYMMDD-HHMMSS-hex4`. Over-length or an invalid `kind` fails with `bad_args` (the field is not named).
 3. `pipeline_resolve(feedback_id, resolution)` to triage (append-only; nothing is deleted).
 
+## Host vsock failure: official stdio plan B
+
+**Plan B is the installer `--client` stdio server**, the same argv
+`install_mcp.build_client_args` / `install-mcp.ps1` register for Claude and
+Codex. Spawn it yourself and speak MCP JSON-RPC on stdin/stdout. This repo
+cannot see the agent host's MCP channel; if that host reports a dead transport,
+follow the host runbook. Do not treat a host-channel failure as
+`daemon_unavailable`, a missing key, or a game-off state.
+
+Default registered shape (Claude; Codex only changes `--client-platform`):
+
+```text
+.\.venv-mcp\Scripts\python.exe -m dayz_mcp --client --keyfile .\.dayz_mcp.key --port 8765 --require-version --idle-timeout 1800 --client-platform claude
+```
+
+Pass the installer's `-Port` / `-KeyFile` (or `--port` / `--keyfile`) when those
+are not the defaults. `--keyfile` is the installer file path, not the key
+bytes. Do not add `--embedded` and do not bind a second listener on the shared
+port. Route `initialize`, `notifications/initialized`, `tools/list`, and every
+`tools/call` through this process. Close it at session end.
+
+Print that official argv, or probe `tools/list` with 3 attempts, 2 s linear
+backoff (`2`, then `4`), and a **15 s read timeout per attempt** so a hung
+handshake cannot block the remaining budget:
+
+```text
+.\.venv-mcp\Scripts\python.exe -m dayz_mcp.stdio_bridge --print-command
+.\.venv-mcp\Scripts\python.exe -m dayz_mcp.stdio_bridge --probe
+```
+
+`--probe` exits after the check. Keep a separate long-lived `--client` process
+for the session. Constants: `tools/dayz_mcp/stdio_bridge.py` `PLAN_B_ATTEMPTS`,
+`PLAN_B_BACKOFF_S`, and `PLAN_B_READ_TIMEOUT_S`. Permanent probe failures —
+including unknown/unclassified exceptions (`stdio_probe_failed`) — are not
+retried. Known permanent codes include `keyfile_missing`, `keyfile_unreadable`,
+`unauthorized`, `import_error`, `daemon_unavailable`, `config_mismatch`, and
+`host_channel`. Only classified transient handshake/connection errors
+(`handshake_timeout`, `connection_refused`) are retried inside the 3-attempt
+budget.
+
 ## Troubleshooting
 
+- Host MCP channel failure (only if the *host* reports it, e.g. vsock / `McpStartupError`): spawn the official stdio `--client` above. A probe `code` of `keyfile_missing`, `unauthorized`, or `daemon_unavailable` is not a host-channel failure.
 - `bridge_status.server_peer.last_poll_age_s = null`: the server-side bridge has not polled; check server profiles and mission config.
 - `bridge_status.client_peer.last_poll_age_s = null`: the client-side bridge has not polled; check `client_profiles\dayz_mcp.json`.
 - `legacy_blocked`: `--require-version` is on while running the 4A bridge. Keep it off until the 4B PBO sends `ver=`.
