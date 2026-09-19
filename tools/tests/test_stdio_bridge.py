@@ -158,6 +158,15 @@ class ClassifyProbeErrorTest(unittest.TestCase):
         self.assertFalse(retryable)
         self.assertIn("cannot observe", message)
 
+    def test_unknown_exception_is_not_retryable(self) -> None:
+        code, retryable, message = classify_probe_error(
+            RuntimeError("unclassified permanent boom")
+        )
+        self.assertEqual(code, "stdio_probe_failed")
+        self.assertFalse(retryable)
+        self.assertIn("RuntimeError", message)
+        self.assertNotIn("unclassified permanent boom", message)
+
 
 class OfficialClientArgvTest(unittest.TestCase):
     def test_matches_build_client_args_default_and_custom(self) -> None:
@@ -260,6 +269,25 @@ class RetryWithBackoffTest(unittest.TestCase):
         self.assertEqual(sleeps, [])
         self.assertEqual(raised.exception.code, "keyfile_unreadable")
         self.assertNotIn("vsock", str(raised.exception))
+
+    def test_unknown_permanent_exception_does_not_retry(self) -> None:
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def boom() -> None:
+            calls["n"] = calls["n"] + 1
+            raise RuntimeError("unclassified permanent boom")
+
+        with self.assertRaises(StdioBridgeError) as raised:
+            retry_with_backoff(
+                boom,
+                attempts=PLAN_B_ATTEMPTS,
+                backoff_s=PLAN_B_BACKOFF_S,
+                sleeper=sleeps.append,
+            )
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(sleeps, [])
+        self.assertEqual(raised.exception.code, "stdio_probe_failed")
 
     def test_exhausted_transient_budget_keeps_code(self) -> None:
         with self.assertRaises(StdioBridgeError) as raised:

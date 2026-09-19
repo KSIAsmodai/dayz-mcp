@@ -92,7 +92,12 @@ def _unwrap_error(error: BaseException) -> BaseException:
 
 
 def classify_probe_error(error: BaseException) -> tuple[str, bool, str]:
-    """Return `(code, retryable, sanitized_message)` for a stdio probe failure."""
+    """Return `(code, retryable, sanitized_message)` for a stdio probe failure.
+
+    Unknown / unclassified exceptions are fail-closed: `retryable=False` with a
+    sanitized `stdio_probe_failed` code. Only classified transient
+    handshake/connection errors are retryable.
+    """
     if isinstance(error, StdioBridgeError):
         return error.code, False, str(error)
 
@@ -194,7 +199,7 @@ def classify_probe_error(error: BaseException) -> tuple[str, bool, str]:
 
     return (
         "stdio_probe_failed",
-        True,
+        False,
         f"stdio_probe_failed: {type(root).__name__}",
     )
 

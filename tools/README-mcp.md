@@ -218,11 +218,13 @@ handshake cannot block the remaining budget:
 
 `--probe` exits after the check. Keep a separate long-lived `--client` process
 for the session. Constants: `tools/dayz_mcp/stdio_bridge.py` `PLAN_B_ATTEMPTS`,
-`PLAN_B_BACKOFF_S`, and `PLAN_B_READ_TIMEOUT_S`. Permanent probe failures return
-a distinct `code` (`keyfile_missing`, `keyfile_unreadable`, `unauthorized`,
-`import_error`, `daemon_unavailable`, `config_mismatch`, `host_channel`) and
-are not retried. Transient handshake/connection errors are retried inside the
-3-attempt budget.
+`PLAN_B_BACKOFF_S`, and `PLAN_B_READ_TIMEOUT_S`. Permanent probe failures —
+including unknown/unclassified exceptions (`stdio_probe_failed`) — are not
+retried. Known permanent codes include `keyfile_missing`, `keyfile_unreadable`,
+`unauthorized`, `import_error`, `daemon_unavailable`, `config_mismatch`, and
+`host_channel`. Only classified transient handshake/connection errors
+(`handshake_timeout`, `connection_refused`) are retried inside the 3-attempt
+budget.
 
 ## Troubleshooting
 
