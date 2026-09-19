@@ -50,6 +50,8 @@ profiles folder the server actually uses), or `version_mismatch` (repack the PBO
 
 For lease cadences (heartbeat 45 s vs TTL 120 s) and coordination details, see [tools/README-mcp.md#lease-cadences](tools/README-mcp.md#lease-cadences).
 
+If the agent host's `mcp.list_tools` fails with `McpStartupError` (vsock) and never recovers, that is the host channel, not the DayZ daemon. Do not retry the host tool for the rest of the session. Spawn the official stdio `--client` (plan B) and close it at handoff: [tools/README-mcp.md#host-vsock-failure-official-stdio-plan-b](tools/README-mcp.md#host-vsock-failure-official-stdio-plan-b).
+
 Not needed for any of this: the native launcher, `dayz_test_run`, and the launcher
 registry — those let the agent *start* the game itself. [README.md](README.md) covers
 them, the run modes, the security model, and what this project cannot do.

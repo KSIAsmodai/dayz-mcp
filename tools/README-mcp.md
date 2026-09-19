@@ -186,8 +186,40 @@ These mailbox tools work with no game and no daemon.
 2. `pipeline_feedback(kind="bug", title="...", body="...", project="")` — `kind` is `bug`, `request`, `finding`, or `tool_contribution`. `title` ≤ 120 characters; `body` ≤ 8000. Body template: `tool / args / error / repro`. Returns `id` `fb-YYYYMMDD-HHMMSS-hex4`. Over-length or an invalid `kind` fails with `bad_args` (the field is not named).
 3. `pipeline_resolve(feedback_id, resolution)` to triage (append-only; nothing is deleted).
 
+## Host vsock failure: official stdio plan B
+
+The agent host's `mcp.list_tools` can raise `McpStartupError` because its own
+vsock channel never came up. That failure lasts the whole session. It is not
+`daemon_unavailable`, not a missing key, and not a game-off state. Do not retry
+the host tool forever.
+
+**Plan B is the installer `--client` stdio server**, the same process Claude/Codex
+already register. Spawn it yourself and speak MCP JSON-RPC on stdin/stdout:
+
+```text
+.\.venv-mcp\Scripts\python.exe -m dayz_mcp --client --keyfile .\.dayz_mcp.key --port 8765
+```
+
+From `tools/`. `--keyfile` is required; the path is the installer file, not the
+key bytes. Do not add `--embedded` and do not bind a second listener on the
+shared port. Route `initialize`, `notifications/initialized`, `tools/list`, and
+every `tools/call` through this process. Close it at session end.
+
+Print the official argv, or probe `tools/list` with 3 attempts and 2 s linear
+backoff (`2`, then `4`) so one handshake flake is not a permanent fail:
+
+```text
+.\.venv-mcp\Scripts\python.exe -m dayz_mcp.stdio_bridge --print-command
+.\.venv-mcp\Scripts\python.exe -m dayz_mcp.stdio_bridge --probe
+```
+
+`--probe` exits after the check. Keep a separate long-lived `--client` process
+for the session. Constants: `tools/dayz_mcp/stdio_bridge.py` `PLAN_B_ATTEMPTS`
+and `PLAN_B_BACKOFF_S`.
+
 ## Troubleshooting
 
+- Host `mcp.list_tools` / `McpStartupError` / vsock: use the stdio plan B above. Do not treat it as a daemon or game failure.
 - `bridge_status.server_peer.last_poll_age_s = null`: the server-side bridge has not polled; check server profiles and mission config.
 - `bridge_status.client_peer.last_poll_age_s = null`: the client-side bridge has not polled; check `client_profiles\dayz_mcp.json`.
 - `legacy_blocked`: `--require-version` is on while running the 4A bridge. Keep it off until the 4B PBO sends `ver=`.
