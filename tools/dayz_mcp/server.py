@@ -7211,7 +7211,8 @@ def parse_args(argv: list[str] | None = None) -> ServerConfig:
     return ServerConfig(
         mode=args.mode,
         port=args.port,
-        keyfile=args.keyfile,
+        # abspath here because the hardened reader demands an already-canonical path and reports any deviation as opaque invalid_daemon_keyfile
+        keyfile=os.path.abspath(args.keyfile) if args.keyfile is not None else None,
         expected_game_version=args.expected_game_version,
         require_version=bool(args.require_version),
         idle_timeout_s=float(args.idle_timeout),
