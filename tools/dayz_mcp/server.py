@@ -2137,8 +2137,20 @@ class ClientRuntime:
         deadline = self._time_fn() + timeout_s
         if cmd in _BRIDGE_WORLD_READ_COMMANDS:
             try:
+                # The readiness probe must fit inside the caller's budget, not
+                # just its own constant: with the daemon unreachable, _ensure_daemon
+                # retries against LIVENESS_STATUS_TIMEOUT_S and burns the full 1.0s
+                # even when tool_timeout is shorter, so a sub-second tool_timeout was
+                # not capping the call at all (bug037). Clamping here keeps the fix
+                # local -- a probe that runs out of budget raises, and the existing
+                # except below leaves snapshot None, which _has_ready_snapshot_shape
+                # rejects, so the early gate is skipped exactly as it was before this
+                # feature landed.
                 snapshot = await self.bridge_status_payload(
-                    timeout_s=LIVENESS_STATUS_TIMEOUT_S
+                    timeout_s=min(
+                        LIVENESS_STATUS_TIMEOUT_S,
+                        max(0.0, deadline - self._time_fn()),
+                    )
                 )
             except Exception:
                 snapshot = None
