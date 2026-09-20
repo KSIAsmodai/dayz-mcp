@@ -340,7 +340,19 @@ open item.
   in the wrong file cost three diagnostic rounds here. Read the `Log()`
   definition before concluding anything from "zero lines".
 
-**OPEN — the game client never joins the server (client peer never polls).**
+**CLOSED (same evening) — full green.** With both dev-server config lines in
+place (see the two "gate" paragraphs at the end of this item), a `mode="all"`
+managed run reached `ready=True reason=ready` at t+40 s with both peers bound
+and polling (server 0.03 s, client 0.06 s), and then, under one lease:
+`query_all_players` → `ok:1` with a real player record (uid, pos, health 1.0);
+`surface_query` → `ok:1`; `entities_query` → `ok:1`; `world_time_set` →
+`ok:1`; `world_weather_set` → `ok:1`; `dayz_test_stop` → succeeded. Reads and
+writes both round-trip through the sealed launcher. The durable one-command
+version of this proof is `tools\dz_mcp_smoke.py` in the toolkit repo. The
+investigation below is kept because every wrong turn in it is a trap the tower
+setup would otherwise repeat.
+
+**(was OPEN) — the game client never joins the server (client peer never polls).**
 On `mode="all"` the launcher starts `DayZDiag_x64.exe -server … -port=2302`
 and `DayZDiag_x64.exe -connect=127.0.0.1 -port=2302 -profiles=… -name=Dev
 -window -noPause -filePatching` (neither with `-noBE`). The launcher reports
@@ -355,12 +367,57 @@ shows no connect attempt and no kick, so this is upstream of login: the
 project mod (clean reseal reproduces it), a port mismatch (2302 both sides),
 the `PluginItemDiagnostic` stack trace (vanilla `DIAG_DEVELOPER` debug print,
 non-fatal, `PluginManager.c:335-339`), a `P:\` filePatching shadow (none), and
-`verifySignatures = 2` (would log a kick). Not yet ruled out: a first-run
-dialog in the fresh `Users\Dev` client profile blocking the join, and the
-known DayZ trap of a Diag server and Diag client sharing one Steam login on
-one machine. Next evidence: a screenshot of the client window (the proof
-script now calls `capture_screenshot` when not ready) and upstream's own
-documented join flow.
+`verifySignatures = 2` (would log a kick). Upstream's own pass
+(`reviews\ingame-2026-09-09\RESULTS.md`) proves this exact client argv DOES
+join on their machine, so the cause is environmental.
+
+**How to see the cause — VERIFIED technique.** `capture_screenshot` goes
+through the daemon's own window grab (class `DayZ`), needs no lease and no
+working game bridge, and returns the frame as a separate MCP **ImageContent
+block** (`.data` base64 + `.mimeType image/jpeg`) — the JSON text block holds
+only metadata (`inline_base64_len`, `window`, `frame_sha256`). Save the image
+block, not a JSON field. A failed `-connect` does not log anything useful on
+either side: the client returns to the main menu behind a modal `CONNECTING
+FAILED (0x…)` dialog whose text IS the diagnosis, and sits there forever —
+which reads, from the logs alone, as "client parked at the intro".
+
+**Ruled out by that technique: pairing the Diag client with a dedicated
+server.** A hand-launched `DayZDiag_x64.exe -connect` against
+`DayZServer_x64.exe` shows `CONNECTING FAILED (0x00020017) — Client is using
+Diag exe while the server is not.` The engine requires Diag↔Diag, so the
+launcher's Diag-as-`-server` design is mandatory, not a quirk, and "use the
+retail dedicated server for the server role" is not an available workaround.
+(Also learned there: `bridge_status` alone never spawns the daemon — it returns
+`daemon_unavailable`; only a lease or launch call spawns it. A watcher that
+only polls status has no daemon for the game to reach.)
+
+**ROOT CAUSE — read off the launcher's own client window:** `CONNECTING FAILED
+(0x00020005) — The server does not accept the client's current filePatching
+setting.` The launcher starts the client with `-filePatching`
+(`dayz_test_worker.py:294-295`); a DayZ server only admits file-patching
+clients when its config contains `allowFilePatching = 1;`. The
+`_server\serverDZ.cfg` supplied on this machine was copied from a plain smoke
+config and lacked the line. Upstream's own architecture doc names this exact
+code (`dayz-mcp-architecture.md:279`, "(0x00020005) — ya cubierto por tu infra
+diag"): their dev server config already had it, which is the environmental
+difference. Not a tool bug, not the Steam login, not signatures. The earlier
+"ruled out `verifySignatures` because a kick would be logged" reasoning was
+also weaker than stated — the launcher's Diag server runs without
+`-adminlog`/`-dologs`, so silence in its RPT proves little; the dialog is the
+only reliable witness. Fix applied: `allowFilePatching = 1;` added to
+`<dev_root>\_server\serverDZ.cfg` (that line only — minimal, evidence-targeted;
+if signature verification is a second gate the next dialog will say so).
+
+**Second gate — it did say so.** With filePatching allowed the client now
+CONNECTS and is kicked: `Warning (0x00040074) — You were kicked off the game.
+Data verification error. Client has a mod which is not on the server …
+(@DayZ_MCP) (Client has a PBO which is not part of the server. (dta\bin.pbo))`.
+That is `verifySignatures = 2`: the launcher's Diag `-server` runs out of the
+CLIENT install, which has no server `keys\` to verify against, so even vanilla
+`dta\bin.pbo` fails. Fix applied: `verifySignatures = 0;`. The managed dev
+server's config therefore needs BOTH lines — `allowFilePatching = 1;` and
+`verifySignatures = 0;` — and each missing one is invisible in every log and
+legible only in the client's modal dialog.
 
 **Gap 3 — the 48 skips: AUDITED.** Zero remain from the launcher gates
 (`requires_installed_launcher` etc.) — the bundle install resolved that
@@ -386,17 +443,22 @@ coverage gap for accepting a genuine junction reparse tag in `_sealed_root`);
    open fails without it).
 5. Write `%LOCALAPPDATA%\DayZ_MCP\launcher-policy.json` with project
    `"DayZ_MCP"`, and CREATE `<dev_root>\_server\profiles`,
-   `<dev_root>\_server\serverDZ.cfg`, `<dev_root>\_client\profiles`.
+   `<dev_root>\_server\serverDZ.cfg`, `<dev_root>\_client\profiles`. That
+   `serverDZ.cfg` MUST contain `allowFilePatching = 1;` and
+   `verifySignatures = 0;` — without the first the client's join dies with
+   `0x00020005`, without the second it is kicked with `0x00040074`, and neither
+   is logged anywhere but the client's modal dialog.
 6. `build_native_launcher.py --verify-reproducible` (first run downloads the
    embeddable CPython into the cache; `--offline` works after that), then
    `launcher_registry_update bootstrap` → `install-dayz-test-v1
    --expected-sha256 <printed sha>`.
 7. Windows Developer Mode on (owner), Steam client running and logged in,
    `P:\` mapped for `pack-addon.ps1`.
-8. Smoke: launch `mode="server"`, wait for `ready.reason` to reach
-   `client_not_polling` (server bound + polling), acquire a lease, call
-   `world_time_set` — `ok: 1` with `applied` echoed back is the pass mark
-   until the client-join item above is closed.
+8. Smoke: from the toolkit repo, `python tools\dz_mcp_smoke.py --mode all`
+   (exit 0 = PASS: both peers ready, reads and writes `ok`; on not-ready it
+   saves the client window screenshot, whose dialog text is the diagnosis).
+   `--mode server` is the headless variant (writes only — reads are gated
+   without a game client by design).
 
 **Not done, optional follow-up**: the native-launcher path
 (`build_native_launcher.py`, `launcher_registry_update bootstrap` +
