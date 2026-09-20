@@ -189,8 +189,8 @@ These mailbox tools work with no game and no daemon.
 ## Host vsock failure: official stdio plan B
 
 **Plan B is the installer `--client` stdio server**, the same argv
-`install_mcp.build_client_args` / `install-mcp.ps1` register for Claude and
-Codex. Spawn it yourself and speak MCP JSON-RPC on stdin/stdout. This repo
+`install_mcp.build_client_args` and the bundled installer script register for
+Claude and Codex. Spawn it yourself and speak MCP JSON-RPC on stdin/stdout. This repo
 cannot see the agent host's MCP channel; if that host reports a dead transport,
 follow the host runbook. Do not treat a host-channel failure as
 `daemon_unavailable`, a missing key, or a game-off state.
