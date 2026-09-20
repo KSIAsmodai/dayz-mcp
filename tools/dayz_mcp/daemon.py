@@ -1418,7 +1418,12 @@ def run_daemon(config: Any, *, stop: threading.Event | None = None) -> int:
     expected_executable = orphan_guard.full_image_path_of(os.getpid())
     if not expected_executable or not os.path.isabs(expected_executable):
         raise RuntimeError("daemon_process_image_unavailable")
-    expected_argv = build_daemon_argv(config, python=sys.executable)
+    # Windows venv launcher stub vs OS-observed argv[0]: build the argv[0] this
+    # daemon's own self-check compares against from the native (OS-observed)
+    # executable path computed two lines above, not the stub-based
+    # sys.executable — matches what probe_status_healthy actually observes on
+    # a live daemon process.
+    expected_argv = build_daemon_argv(config, python=expected_executable)
     expected_cwd = daemon_runtime_cwd()
 
     def healthy(generation: str | None = None) -> bool:

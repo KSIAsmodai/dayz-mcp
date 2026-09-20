@@ -84,6 +84,15 @@ class AccreditedDaemonPolicy:
     security_build_id: str | None
     authority_sha256: str
 
+    @property
+    def native_argv(self) -> tuple[str, ...]:
+        # Windows venv launcher stub vs OS-observed argv[0] (see
+        # host_config.DaemonProvenance.native_argv for the full mechanism).
+        # Not part of authority_sha256: it is purely derived from
+        # native_executable and argv[1:], both already hash-protected inputs,
+        # so it cannot be tampered with independently of those.
+        return (self.native_executable,) + tuple(self.argv[1:])
+
     def __post_init__(self) -> None:
         if self.kind not in {"normal", "bootstrap"} or self.host != "127.0.0.1":
             raise ValueError("invalid_daemon_policy")

@@ -113,9 +113,13 @@ class DaemonIdentityMigrationGateTest(unittest.TestCase):
         image_lookup.assert_called_once_with(daemon.os.getpid())
         self.assertEqual(order, ["gate", "bind"])
         self.assertEqual(bind_keywords["expected_executable"], native_image)
+        # Windows venv launcher stub vs OS-observed argv[0]: run_daemon's own
+        # self-check argv must be built from the native (OS-observed) image
+        # path, not the stub-based sys.executable — see daemon.py's
+        # expected_argv construction two lines below expected_executable.
         self.assertEqual(
             bind_keywords["expected_argv"],
-            daemon.build_daemon_argv(daemon_config, python=daemon.sys.executable),
+            daemon.build_daemon_argv(daemon_config, python=native_image),
         )
 
     def test_coordination_activation_deadline_bounds_real_io_phases(self) -> None:

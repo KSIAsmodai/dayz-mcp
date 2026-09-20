@@ -1243,7 +1243,13 @@ class ClientRuntimeProvenanceGateTest(unittest.TestCase):
         self.assertEqual(runtime._daemon_cwd, str(_TOOLS_DIR.resolve()))
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0]["expected_executable"], self.native)
-        self.assertEqual(tuple(requests[0]["expected_argv"]), self._provenance().argv)
+        # Windows venv launcher stub vs OS-observed argv[0]: the outgoing
+        # comparison argv must be native_argv (base-interpreter-based), not
+        # the stub-based argv used only to spawn the daemon — see
+        # host_config.DaemonProvenance.native_argv.
+        self.assertEqual(
+            tuple(requests[0]["expected_argv"]), self._provenance().native_argv
+        )
         self.assertEqual(requests[0]["expected_cwd"], str(_TOOLS_DIR.resolve()))
 
     def test_unavailable_incomplete_or_conflicting_consensus_has_zero_key_or_request(self) -> None:

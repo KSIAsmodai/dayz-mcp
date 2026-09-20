@@ -49,6 +49,16 @@ class DaemonProvenance:
     keyfile: str
     auto_spawn_daemon: bool
 
+    @property
+    def native_argv(self) -> tuple[str, ...]:
+        # Windows venv launcher stub vs OS-observed argv[0]: `launch_executable`
+        # (and argv[0]) is the venv's own stub path (self-reported
+        # sys.executable), but the OS/psutil-observed argv[0] of the live
+        # daemon child is always the base interpreter (native_executable).
+        # Comparisons against a live process's real argv must use this, not
+        # the stub-based `argv` (which stays stub-based for spawning).
+        return (self.native_executable,) + tuple(self.argv[1:])
+
 
 @dataclass(frozen=True)
 class _ClientRegistration:

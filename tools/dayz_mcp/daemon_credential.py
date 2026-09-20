@@ -73,6 +73,7 @@ class RefreshingDaemonCredential:
             policy.keyfile,
             policy.native_executable,
             policy.argv,
+            policy.native_argv,
             policy.cwd,
             policy.security_build_id,
             policy.authority_sha256,
@@ -102,6 +103,7 @@ class RefreshingDaemonCredential:
                 self.policy.keyfile,
                 self.policy.native_executable,
                 self.policy.argv,
+                self.policy.native_argv,
                 self.policy.cwd,
                 self.policy.security_build_id,
                 self.policy.authority_sha256,
@@ -165,7 +167,8 @@ class RefreshingDaemonCredential:
             port,
             _keyfile,
             native_executable,
-            argv,
+            _argv,
+            native_argv,
             cwd,
             _security_build_id,
             _authority_sha256,
@@ -181,7 +184,11 @@ class RefreshingDaemonCredential:
             headers=dict(headers),
             deadline=deadline,
             expected_executable=native_executable,
-            expected_argv=list(argv),
+            # Windows venv launcher stub vs OS-observed argv[0]: compare
+            # against native_argv (base-interpreter-based), not the
+            # stub-based argv used to spawn the daemon — see
+            # host_config.DaemonProvenance.native_argv.
+            expected_argv=list(native_argv),
             expected_cwd=cwd,
         )
 

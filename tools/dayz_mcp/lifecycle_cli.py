@@ -42,7 +42,9 @@ def _request(
         # Other lifecycle calls retain their short transport deadline.
         deadline=time.monotonic() + (235.0 if path == "/lifecycle/start" else 15.0),
         expected_executable=policy.native_executable,
-        expected_argv=list(policy.argv),
+        # Windows venv launcher stub vs OS-observed argv[0]: compare against
+        # native_argv, not the stub-based argv used to spawn the daemon.
+        expected_argv=list(policy.native_argv),
         expected_cwd=policy.cwd,
         max_response_bytes=transport.MAX_AUTHENTICATED_RESPONSE_BYTES,
     )
