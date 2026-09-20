@@ -91,7 +91,19 @@ matching the declared `files[]` paths. Root cause inside the addon NOT yet
 found — would need minidump analysis (WinDbg or equivalent) or a
 finer-grained isolation (strip scripts one at a time) to pin down further.
 
-**Root cause found — DayZDiag's own debug assert, NOT the addon.** Installed
+**RETRACTED (same day, later session) — the paragraph below reached the wrong
+conclusion.** The `EXCEPTION_BREAKPOINT` was real, but its trigger was the
+mangled `-mod=` argv (the space in `Program Files (x86)` corrupting argument
+parsing — the same defect diagnosed for the server two paragraphs down), not
+an engine assert tripped by the addon. Proof: the sealed managed launcher later
+started `DayZDiag_x64.exe` with `@DayZ_MCP` loaded, as both `-server` and as a
+client, and both booted, compiled the addon (`DayZ_MCP` in every module's
+defines), and ran for minutes without a crash. DayZDiag does NOT crash with
+this addon. The minidump technique (`pip install minidump`, read the exception
+record and resolve the faulting module) remains valid and is worth keeping.
+Original text preserved for the record:
+
+~~Root cause found — DayZDiag's own debug assert, NOT the addon.~~ Installed
 `pip install minidump` (pure-Python minidump reader, no WinDbg needed) and
 parsed `ErrorMessage_DayZDiag_x64_2026-09-19_16-49-01.mdmp` directly:
 `VERIFIED` exception is `EXCEPTION_BREAKPOINT` (INT3), address
@@ -265,6 +277,126 @@ because the instinct to "just narrow the assertion" will recur.
   `python relock_toolchain.py` itself; committing this laptop's pin would break
   its builds. `tools/README-mcp.md` says so explicitly.
 - `tools/_mcp_config/` — untracked, contains the live API key. Never commit.
+
+## 2026-09-19 (evening) — managed launcher driven end to end; writes proven live
+
+Owner ruling: "any open, close it, anything wrong, fix it." Three gaps were
+named and worked: (1) no MCP tool call had ever round-tripped to the game,
+(2) the sealed `dayz_test_run` path had never been driven, (3) 48 test skips
+were unexplained. Results below; the per-machine setup checklist at the end
+is the part the tower needs.
+
+**Gap 2 — sealed managed launcher: CLOSED.** `dayz_test_run(project="DayZ_MCP",
+mode="server"|"all", mission="livonia")` launches through
+`dayz-test-launcher.exe`, binds the instance, returns a `run_id`;
+`dayz_test_stop(run_id)` tears it down cleanly (VERIFIED, multiple runs, no
+orphaned processes). Three launcher-policy gaps had to be found one at a time
+— each surfaced as `instance_config_missing` or a clean server exit, none was a
+tool bug: the launcher derives `<dev_root>\_server\profiles`,
+`<dev_root>\_server\serverDZ.cfg` (`[ERROR][Server config] :: Could not find
+server config` then a clean termination countdown) and
+`<dev_root>\_client\profiles`, and creates none of them. It also loads a mod
+folder named after the policy's project (`@<project>`), so a made-up project
+name (`DayZ_MCP_Smoke`) put a phantom `@DayZ_MCP_Smoke` on every argv
+(tolerated as `ANIMATION (E)` noise, but wrong). Fixed by naming the project
+`DayZ_MCP`, which also makes `extra_mods=["@DayZ_MCP"]` unnecessary. Any policy
+edit re-seals the bundle: `build_native_launcher.py --verify-reproducible`,
+then `launcher_registry_update rollback-last`, then `install-dayz-test-v1
+--expected-sha256 <sha256 of approved-launchers.json AFTER the rollback>` —
+the CAS is the registry file's hash, never the PE's. `write_packaged_modules_lock.py
+--check` stays green across a reseal because the embedded sources are unchanged.
+
+**Gap 1 — real tool calls: CLOSED for writes, OPEN for reads.** Through the
+registered `--client` stdio process (spawning its own daemon):
+`session_acquire_wait` issues a live lease (TTL 120 s); progressive disclosure
+verified live — 17 tools before a lease, 63 after; `session_release` is clean.
+`world_time_set` and `world_weather_set` against the managed server returned
+`ok: 1` with the applied state (year/month/day/hour/minute and the weather
+fractions echoed back) — a full MCP → daemon → addon → engine → response
+round-trip. Capability negotiation reports `state: match, reason: ok` with 21
+announced commands. Reads (`query_all_players`, `surface_query`,
+`entities_query`) return `game_not_ready:reason=client_not_polling` — see the
+open item.
+
+**Contract details learned the hard way (all VERIFIED by hitting them):**
+- The daemon must be spawned by the MCP client. A daemon started from a shell
+  or a scheduled task fails accreditation
+  (`daemon_reaccreditation_failed_open_new_session`).
+- `dayz_test_run` / `dayz_test_stop` manage their own lease; holding one while
+  calling them is `session_transition_conflict`. Sequence: launch (no lease) →
+  poll `bridge_status` until `ready.ready == true` → acquire → work → release →
+  stop.
+- Readiness requires BOTH peers bound and polling. A `mode="server"` run can
+  write but every read is gated (`_BRIDGE_WORLD_READ_COMMANDS` = read-only
+  commands minus `logs_since`). Headless checks: writes + `logs_since` +
+  `wait_for(log_matches)`.
+- Arg schemas are strict and the errors are precise (`entities_query` radius
+  ≤ 200; `world_time_set` needs year/month/day) — validation failures are the
+  tool working, not breaking.
+- **Two different log tags, two different log files.** The server bridge logs
+  `[DayZ-MCP] …` and, being server-side, it lands in the RPT. The client bridge
+  logs `[MCP-CLIENT] …` (`MCPClientBridge.c:4524`) and, being client-side
+  `Print()`, it lands in `script_*.log`, never the RPT. Grepping the wrong tag
+  in the wrong file cost three diagnostic rounds here. Read the `Log()`
+  definition before concluding anything from "zero lines".
+
+**OPEN — the game client never joins the server (client peer never polls).**
+On `mode="all"` the launcher starts `DayZDiag_x64.exe -server … -port=2302`
+and `DayZDiag_x64.exe -connect=127.0.0.1 -port=2302 -profiles=… -name=Dev
+-window -noPause -filePatching` (neither with `-noBE`). The launcher reports
+`server_alive: true, client_alive: true, steam_startup: "observed"`. The
+server binds and polls within ~30 s. The client compiles the addon but its
+script log shows exactly ONE `Creating Mission: …scenes\intro.ChernarusPlus\
+mission.c` — the main-menu intro (`someMission.c` → `MissionMainMenu`) — and
+never a second one, so `MissionGameplay` (where the client bridge lives) is
+never instantiated and no `[MCP-CLIENT]` line is ever written. The server RPT
+shows no connect attempt and no kick, so this is upstream of login: the
+`-connect` handshake never happens. Ruled out with evidence: the phantom
+project mod (clean reseal reproduces it), a port mismatch (2302 both sides),
+the `PluginItemDiagnostic` stack trace (vanilla `DIAG_DEVELOPER` debug print,
+non-fatal, `PluginManager.c:335-339`), a `P:\` filePatching shadow (none), and
+`verifySignatures = 2` (would log a kick). Not yet ruled out: a first-run
+dialog in the fresh `Users\Dev` client profile blocking the join, and the
+known DayZ trap of a Diag server and Diag client sharing one Steam login on
+one machine. Next evidence: a screenshot of the client window (the proof
+script now calls `capture_screenshot` when not ready) and upstream's own
+documented join flow.
+
+**Gap 3 — the 48 skips: AUDITED.** Zero remain from the launcher gates
+(`requires_installed_launcher` etc.) — the bundle install resolved that
+category completely. 32 are dev-only fixtures that do not ship (private
+publish tooling, `PROJECT-MAP.md`, `test-contracts\`, legacy `.pyc` evidence
+blobs, an evidence PNG); 6 are wrong-environment (dual-checkout scenarios,
+sparse-checkout disclosure); 10 could run here: 4 need Windows Developer Mode
+(symlink creation, `WinError 1314`) and guard the symlink/reparse-point
+path-authority rejections — the only security-relevant set, owner's setting to
+flip; 2 need a `P:\Mods` junction (one has no synthetic equivalent — a real
+coverage gap for accepting a genuine junction reparse tag in `_sealed_root`);
+2 want a vanilla tree at `P:\scripts` (we have one to mount); 2 want Python
+3.10 (logic covered synthetically elsewhere).
+
+**Per-machine setup checklist (what the tower must do; none of it is committed):**
+1. `git pull`; `python tools\install_mcp.py --pin-clis --codex-exe <path to the
+   native codex.exe under npm's @openai\codex-win32-x64\vendor\…\bin>`.
+2. `python tools\install_mcp.py --server-profiles <dev_root>\_server\profiles
+   --client-profiles <dev_root>\_client\profiles --mission-path <mission>
+   --register` (needs `~\.claude.json` AND `~\.codex\config.toml`).
+3. `python relock_toolchain.py` (MSVC/SDK pin is machine-specific).
+4. `type nul > tools\approved-launchers.lock` (gitignored runtime lock; `r+b`
+   open fails without it).
+5. Write `%LOCALAPPDATA%\DayZ_MCP\launcher-policy.json` with project
+   `"DayZ_MCP"`, and CREATE `<dev_root>\_server\profiles`,
+   `<dev_root>\_server\serverDZ.cfg`, `<dev_root>\_client\profiles`.
+6. `build_native_launcher.py --verify-reproducible` (first run downloads the
+   embeddable CPython into the cache; `--offline` works after that), then
+   `launcher_registry_update bootstrap` → `install-dayz-test-v1
+   --expected-sha256 <printed sha>`.
+7. Windows Developer Mode on (owner), Steam client running and logged in,
+   `P:\` mapped for `pack-addon.ps1`.
+8. Smoke: launch `mode="server"`, wait for `ready.reason` to reach
+   `client_not_polling` (server bound + polling), acquire a lease, call
+   `world_time_set` — `ok: 1` with `applied` echoed back is the pass mark
+   until the client-join item above is closed.
 
 **Not done, optional follow-up**: the native-launcher path
 (`build_native_launcher.py`, `launcher_registry_update bootstrap` +
