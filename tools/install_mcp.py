@@ -696,10 +696,12 @@ class CliRegistrationProvider:
         returncode, stdout, stderr = self._result_fields(completed)
         if returncode != 0:
             expected = self.not_found.entries[role]
+            expected_stdout = expected.stdout.replace(_ABSENT_PROBE_NAME, "dayz-mcp")
+            expected_stderr = expected.stderr.replace(_ABSENT_PROBE_NAME, "dayz-mcp")
             if (
                 returncode == expected.returncode
-                and stdout == expected.stdout
-                and stderr == expected.stderr
+                and stdout == expected_stdout
+                and stderr == expected_stderr
             ):
                 return None
             raise InstallerExecutionError("registration_probe_failed")
