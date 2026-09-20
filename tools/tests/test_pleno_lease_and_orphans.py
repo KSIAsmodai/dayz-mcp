@@ -105,6 +105,7 @@ class PlenoLeaseAndOrphansTest(unittest.IsolatedAsyncioTestCase):
     async def test_t2_four_descriptions_name_heartbeat_and_drop_internal_renewal(
         self,
     ) -> None:
+        self.runtime.active_lease_token = "lease-token-after-acquire"
         tools = {tool.name: tool for tool in await self.app.list_tools()}
         for name in _LEASE_TOOLS:
             with self.subTest(tool=name):
@@ -188,6 +189,7 @@ class PlenoLeaseAndOrphansTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("runs_retired_recently", result)
 
     async def test_t2_r2_session_heartbeat_keeps_low_level_marker(self) -> None:
+        self.runtime.active_lease_token = "lease-token-after-acquire"
         tools = {tool.name: tool for tool in await self.app.list_tools()}
         description = tools["session_heartbeat"].description or ""
         self.assertTrue(
@@ -248,6 +250,7 @@ class PlenoLeaseAndOrphansTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hb_status, 200)
         self.assertIsNotNone(kept.get("owner"))
 
+        self.runtime.active_lease_token = "lease-token-after-acquire"
         tools = {tool.name: tool for tool in await self.app.list_tools()}
         for name in _LEASE_TOOLS:
             with self.subTest(tool=name):

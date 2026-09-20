@@ -546,6 +546,7 @@ class ClientAcquireWaitTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(server, "ClientRuntime", return_value=runtime):
             app, built_runtime = server.build_app(config)
         self.assertIs(built_runtime, runtime)
+        runtime.active_lease_token = "lease-token-after-acquire"
         tools = {tool.name: tool for tool in await app.list_tools()}
 
         acquire_schema = tools["session_acquire_wait"].inputSchema

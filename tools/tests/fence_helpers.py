@@ -11,10 +11,23 @@ _FIXTURE_CTIME = "2026-08-18T00:00:00.000000Z"
 _FIXTURE_HASH_EXE = "a" * 64
 _FIXTURE_HASH_CMD = "b" * 64
 
+# VERIFIED dayz_mcp/core.py:40 EXPECTED_BRIDGE_VERSION = "10"; matches the
+# _VALID_PEER_VERSION fixture pattern already used by test_client_mode.py:27
+# and test_mcp_tools.py:24 (f"{EXPECTED_BRIDGE_VERSION}~1.29.0"). Used only by
+# the ``poll=True`` branch of bind_both_peers below, so a genuinely "ready"
+# fixture reaches version_state="ok", not just bound+polled with no version
+# (which core.version_state_for classifies "legacy" and compute_bridge_ready
+# never treats as ready).
+from dayz_mcp.core import EXPECTED_BRIDGE_VERSION as _EXPECTED_BRIDGE_VERSION
+
+_READY_PEER_VERSION = f"{_EXPECTED_BRIDGE_VERSION}~1.29.0"
+
 
 def bind_both_peers(
     state: object,
     run_id: str = "test-run",
+    *,
+    poll: bool = False,
 ) -> tuple[str, str]:
     """Bind both fenced peers and register the run without a holder.
 
@@ -22,6 +35,17 @@ def bind_both_peers(
     run RUNNING_IDLE with processes the lifecycle guard classifies ``owned``.
     Ownership is obtained only through product operations (``adopt_run`` with
     a real coordinator lease, or ``start_run``).
+
+    ``poll`` (default False, opt-in, byte-identical for every existing
+    caller that omits it): when True, also records one accredited poll per
+    peer via ``accredited_poll`` so ``bound_last_poll_age_s`` is finite and
+    ``compute_bridge_ready``'s world-read gate (server.py's
+    ``_world_read_not_ready``) sees the peers as poll-ready immediately,
+    not just bound. Several existing callers (test_mcp_tools.py's
+    ``test_world_read_not_ready_includes_liveness_reason`` and
+    ``test_never_polled_is_game_not_ready_before_enqueue``) deliberately
+    assert the bound-but-not-yet-polled ``binding_not_ready`` state right
+    after ``bind_both_peers`` — so this must stay opt-in, never the default.
     """
     installer = getattr(state, "install_bound_peer", None)
     if not callable(installer):
@@ -39,6 +63,9 @@ def bind_both_peers(
         run_id=run_id,
     )
     _register_manifest_run(state, run_id)
+    if poll:
+        accredited_poll(state, "server", version=_READY_PEER_VERSION)
+        accredited_poll(state, "client", version=_READY_PEER_VERSION)
     return INST_SERVER, INST_CLIENT
 
 

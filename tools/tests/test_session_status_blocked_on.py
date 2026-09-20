@@ -113,6 +113,7 @@ class SessionStatusBlockedOnTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("session_acquire_wait", result["blocked_on"])
 
     async def test_lease_ttl_and_internal_renewal_are_in_both_descriptions(self) -> None:
+        self.runtime.active_lease_token = "lease-token-after-acquire"
         tools = {tool.name: tool for tool in await self.app.list_tools()}
 
         for name in ("session_acquire_wait", "session_status"):

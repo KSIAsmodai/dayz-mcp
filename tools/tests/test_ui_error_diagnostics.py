@@ -143,11 +143,27 @@ class BridgeErrorDiagnosticsTest(unittest.TestCase):
         )
 
 
+def _ready_status_snapshot() -> dict[str, Any]:
+    """A peers/results_pending shape core.build_status can classify as ready.
+
+    Runtime.call_bridge calls self.status() -> self.state.status_snapshot()
+    before it ever reaches enqueue_command (server.py:1444, via
+    _world_read_not_ready), so any fake state wired in as runtime.state needs
+    this method too -- not just enqueue_command/take_result/abandon_command.
+    binding_state=None + a fresh last_poll_age_s keeps peer_is_live() true
+    (peer_liveness.py); version "10~" matches EXPECTED_BRIDGE_VERSION with no
+    expected_game_version, so version_state_for() returns "ok" (core.py).
+    """
+    peer = {"last_poll_age_s": 0.1, "binding_state": None, "version": "10~", "queue_depth": 0}
+    return {"peers": {"server": dict(peer), "client": dict(peer)}, "results_pending": 0}
+
+
 def _fake_state(result: dict[str, Any]) -> SimpleNamespace:
     return SimpleNamespace(
         enqueue_command=lambda *args, **kwargs: (200, {"id": 41}),
         take_result=lambda command_id, remove=False: dict(result),
         abandon_command=lambda *args, **kwargs: None,
+        status_snapshot=lambda *args, **kwargs: _ready_status_snapshot(),
     )
 
 

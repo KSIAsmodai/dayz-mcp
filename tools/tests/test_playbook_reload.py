@@ -144,6 +144,7 @@ class PlaybookReloadTest(unittest.IsolatedAsyncioTestCase):
         self.assert_preserved()
 
     async def test_wire_requires_exact_explicit_module(self):
+        self.runtime.active_lease_token = "lease-token-after-acquire"
         tools = {tool.name: tool for tool in await self.app.list_tools()}
         schema = tools["playbook_reload"].inputSchema
         self.assertIn("module", schema["required"])

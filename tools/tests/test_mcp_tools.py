@@ -1244,6 +1244,7 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
         runtime = _fixture_client_runtime(config)
         with patch.object(server_module, "ClientRuntime", return_value=runtime):
             app, _built = build_app(config)
+        runtime.active_lease_token = "lease-token-after-acquire"
         tools = {tool.name: tool for tool in await app.list_tools()}
         desc = (tools["dayz_test_run"].description or "").lower()
         self.assertIn("reattach", desc)

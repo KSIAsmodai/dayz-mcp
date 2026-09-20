@@ -49,6 +49,7 @@ class TelemetryReadModesContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"object_at", "fixture_jsonl"}, set(enum))
 
     async def test_list_tools_schema_matches_the_manager_enum(self) -> None:
+        self.runtime.active_lease_token = "lease-token-after-acquire"
         listed = {tool.name: tool for tool in await self.app.list_tools()}
         listed_enum = listed["telemetry_read"].inputSchema["properties"]["mode"]["enum"]
         manager_enum = self._tool().parameters["properties"]["mode"]["enum"]
@@ -134,11 +135,31 @@ class TelemetryReadModesContractTest(unittest.IsolatedAsyncioTestCase):
         })
 
 
+def _ready_status_snapshot() -> dict:
+    """A peers/results_pending shape core.build_status can classify as ready.
+
+    telemetry_read is in session_coordination.READ_ONLY_COMMANDS, so
+    Runtime.call_bridge's _world_read_not_ready(self, cmd, self.status())
+    gate (server.py:710-726) runs before enqueue_command: with a status the
+    gate reads as not-ready it returns the synthetic {"ok": False,
+    "code": "not_ready", ...} dict itself (server.py:720-726) instead of ever
+    reaching wait_for_result's real ok:0 -> _bridge_error(result, cmd)
+    conversion this test class exists to exercise. binding_state=None + a
+    fresh last_poll_age_s keeps peer_is_live() true (peer_liveness.py);
+    version "10~" matches EXPECTED_BRIDGE_VERSION with no
+    expected_game_version, so version_state_for() returns "ok" (core.py) and
+    compute_bridge_ready() reports ready=True (server.py:601).
+    """
+    peer = {"last_poll_age_s": 0.1, "binding_state": None, "version": "10~", "queue_depth": 0}
+    return {"peers": {"server": dict(peer), "client": dict(peer)}, "results_pending": 0}
+
+
 def _fake_bridge_state(result: dict) -> SimpleNamespace:
     return SimpleNamespace(
         enqueue_command=lambda *args, **kwargs: (200, {"id": 41}),
         take_result=lambda command_id, remove=False: dict(result),
         abandon_command=lambda *args, **kwargs: None,
+        status_snapshot=lambda *args, **kwargs: _ready_status_snapshot(),
     )
 
 

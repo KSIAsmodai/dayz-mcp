@@ -121,6 +121,7 @@ class WaitForMarkerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("bad_marker", str(caught.exception))
 
     async def test_public_contract_declares_both_scan_modes_and_precedence(self) -> None:
+        self.runtime.active_lease_token = "lease-token-after-acquire"
         tools = {tool.name: tool for tool in await self.app.list_tools()}
         tool = tools["wait_for"]
         self.assertIn("marker", tool.inputSchema["properties"])

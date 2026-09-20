@@ -25,6 +25,15 @@ from tests.test_daemon import _free_port, _http
 from tests.test_client_mode import _fixture_client_runtime
 from tests.fence_helpers import INST_CLIENT, INST_SERVER, bind_both_peers
 
+# VERIFIED dayz_mcp/server.py:50 `from dayz_mcp.core import EXPECTED_BRIDGE_VERSION`
+# (re-exported on the server module). Same pattern as test_client_mode.py:27 and
+# test_mcp_tools.py:24's _VALID_PEER_VERSION. GamePeer's real /poll loop below must
+# send a version that classifies "ok" (core.version_state_for) — an unversioned poll
+# downgrades bind_both_peers(..., poll=True)'s seeded "ok" state back to "legacy" the
+# moment the peer thread's first real poll lands, which compute_bridge_ready never
+# treats as ready, re-triggering the world-read gate mid-test.
+_VALID_PEER_VERSION = f"{server.EXPECTED_BRIDGE_VERSION}~1.29.0"
+
 
 class IntegrationDaemon:
     """Real HTTP daemon wiring with an isolated durable runtime directory."""
@@ -43,7 +52,11 @@ class IntegrationDaemon:
             self.state = daemon.build_server_state(
                 self.config, key, activate_coordination=True
             )
-        bind_both_peers(self.state)
+        # poll=True: the world-read readiness gate (_world_read_not_ready)
+        # requires an accredited poll before it will enqueue a bridge read,
+        # and these e2e tests read immediately after daemon startup, before
+        # any real GamePeer has had a chance to poll over HTTP.
+        bind_both_peers(self.state, poll=True)
         # P-I10: no owner is written here. Tests that dispatch acquire a
         # real lease and call adopt_run (see SessionE2ETest.adopt_run).
         self.httpd = loopback.create_http_server(
@@ -123,6 +136,7 @@ class GamePeer:
             query={
                 "peer": self.peer,
                 "inst": INST_SERVER if self.peer == "server" else INST_CLIENT,
+                "ver": _VALID_PEER_VERSION,
             },
         )
         new_items: list[dict[str, object]] = []

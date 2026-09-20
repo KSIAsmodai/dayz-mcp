@@ -289,6 +289,15 @@ class PythonBacklogFixesTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_bug024_timeout_reaps_state_and_never_delivers_zombie(self) -> None:
         state = loopback.ServerState("fixture-key")
+        # bind+poll: the world-read readiness gate (_world_read_not_ready)
+        # short-circuits query_player_state before it ever reaches
+        # enqueue_command unless both peers are bound AND have an
+        # accredited poll on record. This test's own scenario is a real
+        # in-flight timeout (command enqueued, then nobody answers), which
+        # requires actually getting past that gate.
+        from tests.fence_helpers import bind_both_peers
+
+        bind_both_peers(state, poll=True)
         runtime = server.Runtime(
             server.ServerConfig(key="fixture-key", log_sink=lambda _message: None)
         )
