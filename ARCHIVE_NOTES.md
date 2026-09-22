@@ -1535,3 +1535,69 @@ runtime.json` uses, so the two can't drift again). `404 run_not_found` is
 confirmed downstream fallout of the `409`s, not a separate defect. Phase 2
 exit criterion still NOT met — next actionable fix is now fully scoped and
 narrow.
+
+## 2026-09-21 (final this session) — durable game_path fix landed; Phase 2 exit criterion MET for the first time
+
+**Owner ruling on the env-var verification blocker**: `spawn_detached`'s
+`_child_environment()` (`daemon.py:996-1001`) does `dict(os.environ)` — the
+daemon inherits THIS SESSION'S OWN client process's environment at spawn
+time, and that client was launched by the Claude Code app itself before
+this conversation started. Setting `DAYZ_GAME_PATH` via Bash/PowerShell
+cannot reach it — those run in separate process trees. Confirmed this
+architecturally (read `_child_environment`, no file-based override exists
+anywhere in `daemon.py`'s `game_path` resolution) before proposing
+alternatives; owner chose the self-verifying-default approach over pulling
+in `worker-runtime.json` (a real architecture change — daemon has ZERO
+existing reference to `worker-runtime.json`/`request-policy.json`/
+`sealed_policies` anywhere, confirmed by grep, and would need to solve
+"which registered launcher's bundle" for multi-project cases) or a full
+session restart.
+
+**Durable fix, scoped exactly as directed — `daemon.py` only, same site as
+the earlier probe**: added `_resolve_dayz_game_path()` (`daemon.py:362-388`)
+and `_DAYZ_GAME_PATH_CANDIDATES` — checks `DAYZ_GAME_PATH` first (explicit
+override still wins), then a short candidate list (Experimental branch,
+then plain Steam), accepts the first directory that actually contains
+`DayZDiag_x64.exe`. If nothing qualifies, falls back to the original
+behavior (env var if set, else the plain Steam default) — no new silent
+wrong path invented, `executable_not_allowed` stays the visible failure for
+a genuinely broken install. `process_lifecycle.py`'s allowlist logic itself,
+`launcher.cpp`, `_PipeBroker`, and the Debug-API supervisor all untouched.
+Compiled clean; `git diff` confirmed scoped to exactly this site before the
+daemon restart.
+
+**Verified live, VERIFIED — full green run, first time ever**: killed the
+daemon (found via `netstat -ano | grep :8765`, not guessed by memory
+footprint this time), fresh generation confirmed no reaccreditation issue,
+`dayz_test_run(mode=all, mission=livonia)` — **`status: "succeeded"`**,
+`elapsed_s: 14.14`, `server_alive: true`, `client_alive: true`,
+`process_alive: true`, `error_code: null`. `bridge_ready: false /
+binding_not_ready` is the normal, benign not-yet-handshaked state (matches
+documented behavior above: readiness lands ~30-40s in), not a failure.
+`dayz_test_stop` tore it down cleanly (`tasklist` confirmed zero lingering
+`DayZDiag`/`DayZServer` processes after).
+
+**Mission-choice note, resolved live mid-session**: the FIRST successful
+repro used `mission=chernarus`, which surfaced a real but totally
+unrelated, already-known trap — a Windows compile-error dialog,
+`init.c(65): Bad type 'Dogtag_Base'` — because `dayzOffline.chernarusplus`'s
+init.c is customized to require `@Dogtags` (documented at the very top of
+this file, 2026-09-19: "chernarusplus copies all carry a customized init.c
+requiring `@Dogtags` — avoided that dependency by using enoch instead").
+Re-ran on `mission=livonia` (→ `dayzOffline.enoch`) per the owner's
+"test hygiene" instruction — clean success, no dialog, confirming the
+`chernarus` dialog was never part of tonight's bug chain.
+
+**Committed and pushed**: `ff488d0` ("Self-verify daemon game_path default
+instead of a blind hardcoded install path"), on top of `ccc65f0`
+(native_argv) and `73db27b` (the investigation record). Three clean commits
+this session, in order: `eadb42e..ccc65f0..73db27b..ff488d0`.
+
+**PHASE 2 EXIT CRITERION MET.** `dayz_test_run(mode=all)` — the roadmap's
+own stated bar (`tools\DAYZ_MCP_ROADMAP.md` row 2: "smoke exits 0 on the
+tower; note in ARCHIVE_NOTES.md") — succeeds end to end on the tower for
+the first time, confirmed on two separate missions. Both bugs that blocked
+it (`daemon_identity_unverified` in the sealed bundle's own accreditation
+call, `executable_not_allowed` from a stale hardcoded game path) are fixed,
+verified live, committed, and pushed. Update the roadmap's own status line
+to reflect this the next time that file is touched.
