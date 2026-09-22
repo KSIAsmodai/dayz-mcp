@@ -1787,11 +1787,22 @@ ORIGINAL Experimental project) — VERIFIED same success, no regression.
 Both installs work side by side on the same daemon generation, no config
 swap between them. Stopped and cleaned up.
 
-**Not yet re-tested**: `mode="all"` (client+bridge reads) against
-`DayZ_MCP_Vanilla` specifically — tonight only proved the headless
-`mode="server"` path (which is exactly where the fixed check lives) for
-both projects. Worth a `mode=all` pass next time this sandbox is used for
-real, same as the still-open read-recheck from the entry above.
+**`mode=all` re-check, same session, closed the "not yet re-tested" item
+above.** `dayz_test_run(project="DayZ_MCP_Vanilla", mode="all",
+mission="livonia", extra_mods=["@DayZ_MCP"])` — VERIFIED `status:
+"succeeded"`, both peers reached `bridge_status.ready.ready: true` at
+`elapsed_s: 25.4` (`wait_for(log_matches, pattern="MCP-CLIENT")` caught the
+client's first poll), `capabilities.state: "match"` both sides, same full
+21-command server / 19-command client surface as the Experimental project.
+Confirms the vanilla sandbox runs its OWN real game version end to end —
+`version: "10~1.29.163709"` (stable client build), genuinely different from
+Experimental's `"10~1.30.164014.27"` seen earlier tonight, proving the two
+installs are not just differently-named but actually decoupled builds.
+Stopped clean, `dayz_test_stop` VERIFIED `status: "succeeded"`. Same known
+gap as the read-recheck entry above: this session's own MCP tool cache is
+still frozen at the pre-lease 17-tool set, so `query_all_players` etc.
+couldn't be literally invoked here either — daemon-side readiness is
+proven, the actual read calls need a fresh session to exercise.
 
 **Committed, not yet pushed at write time**: `tools\dayz_mcp\daemon.py`,
 `tools\dayz_mcp\process_lifecycle.py`. `%LOCALAPPDATA%\DayZ_MCP\
