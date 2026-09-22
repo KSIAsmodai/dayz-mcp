@@ -1646,3 +1646,156 @@ from scratch.
 Cleaned up after: `dayz_test_stop` — VERIFIED `status: "succeeded"`,
 `stop_method: "forced_kill"`; `session_status` afterward — VERIFIED
 `box.occupied: false`, run retired, zero lingering state.
+
+## 2026-09-22 — daemon game_path check made multi-install-aware; a real vanilla (non-Experimental) sandbox now exists
+
+Owner's ask: he doesn't want to test on DayZ Experimental. He wants to "build
+servers wherever and point it at them" — plural game installs, not one
+hardcoded default. Tonight's `ff488d0` fix (2026-09-21) narrowed the old
+single-hardcoded-path bug to a 2-candidate self-verify, but that is still
+ONE active default for the whole daemon — pointing a request at a second,
+different install would hit the exact same `executable_not_allowed` bug
+again, just against a path the daemon still doesn't know about. Owner chose
+the real fix (option "B" of two offered) over the quick exclusive swap.
+
+**RETRACTION first.** Earlier this session I told the owner `DayZDiag_x64.exe`
+probably does not ship outside the Experimental branch, based on `steamcmd
+app_info_print` metadata for app `221100` naming no "Diag" launch entry, and
+checking `DayZ Tools` (830640) / `DayZ Experimental Tools` on this machine,
+neither of which has it. That evidence was real but the conclusion was
+wrong — metadata not listing a file as a Steam "launch option" does not mean
+the file isn't in the depot; `DayZDiag_x64.exe` ships as a plain file, not a
+launch entry. Owner pointed at his own real, actively-played vanilla client
+— `D:\SteamLibrary\steamapps\common\DayZ\` — and `DayZDiag_x64.exe` (20.2 MB,
+Aug 16 2026) is right there, VERIFIED, a complete install (`dta\`,
+`mpmissions\`, his own mods `@BoldFixes`/`@KSI_StalkerAI`/etc., real crash
+logs from actual play). Corrected here per caveproof Law 10 so a future
+session doesn't inherit the wrong claim.
+
+**Wiped per owner instruction**: the old `C:\Program Files (x86)\Steam\
+steamapps\common\DayZ\` folder was a 240 KB orphan — a stray
+`DayZDiag_x64.exe` (not a real Steam-tracked install; no
+`appmanifest_221100.acf` existed) plus an old `@DayZ_MCP\Addons\DayZ_MCP.pbo`
+copy. Deleted outright, no real data lost.
+
+**Root cause of the "one active install" limitation, VERIFIED by reading
+code, not inferred**: `daemon.py`'s `_resolve_dayz_game_path()` (the
+`ff488d0` fix) picks ONE `Path` from a fixed 2-candidate tuple and hands it
+to `ProcessLifecycle(game_path=...)`. `process_lifecycle.py`'s
+`_canonical_error()` then accepts a launch request's executable ONLY if it
+resolves under that single `self.game_path`. Any project whose
+`diag_executable` (declared per-project in `launcher-policy.json`, consumed
+by the sealed launcher to build the actual argv) points somewhere else fails
+`executable_not_allowed`, regardless of how legitimate that install is.
+
+**Fix, `process_lifecycle.py`**: `ProcessLifecycle.__init__` gained a new
+optional `extra_game_paths: tuple[Path, ...] = ()` parameter (added last,
+default empty — every existing caller, including all 15 test files that
+construct it directly with `game_path=`, is untouched). `self.game_paths`
+is now `game_path` plus every extra root, order-preserved, de-duplicated.
+`_canonical_error()` checks the requested executable against EVERY root in
+`self.game_paths`, not just the primary — same logic, generalized from one
+path to a set.
+
+**Fix, `daemon.py`**: new `_resolve_extra_dayz_game_paths()` reads the SAME
+live, non-sealed `%LOCALAPPDATA%\DayZ_MCP\launcher-policy.json` the setup
+checklist already has the owner hand-edit (locate order matches
+`build_native_launcher.py`'s own: `DAYZ_MCP_LAUNCHER_POLICY` env var, else
+`%LOCALAPPDATA%`), collects every registered project's `game_directory`,
+and keeps only the ones that actually contain `DayZDiag_x64.exe`. Wired into
+the `ProcessLifecycle(...)` construction as `extra_game_paths=`. Best-effort
+by design (same "no new silent wrong path invented" rule as `ff488d0`): a
+missing, unreadable, or malformed policy file changes nothing — the
+existing single-default behavior is the floor, never regressed. This means
+**adding a new project to `launcher-policy.json` that points at a different,
+already-real install takes effect on the daemon's next spawn — no rebuild,
+no reseal** (`daemon.py` is live-imported, confirmed by the generation ID
+changing on kill/respawn).
+
+**What still legitimately needs a reseal, and why that's not a bug**: a
+project's NAME (which gates its `dev_root`/`mission_roots`/`mod_roots` — the
+actual filesystem surface a request can touch) is validated by the SEALED
+launcher against `native-launchers\dayz-test-v1\request-policy.json`, a
+build artifact of `build_native_launcher.py` whose hash (`request_policy_
+sha256`) is pinned into `closure-manifest.json`. That's a real, intentional
+security boundary — nothing should be able to smuggle in an arbitrary mod
+or script root without going through the build+registry pipeline. Tonight
+that pipeline ran once, to register the new project's NAME
+(`DayZ_MCP_Vanilla`); the game_path fix above means it should be the LAST
+time a reseal is needed purely to point at a different, already-registered
+project's game install.
+
+**New project added, `DayZ_MCP_Vanilla`**, in
+`%LOCALAPPDATA%\DayZ_MCP\launcher-policy.json` (not committed — per-machine,
+same as the existing `DayZ_MCP` entry): `diag_executable`/`game_directory`
+point at `D:\SteamLibrary\steamapps\common\DayZ`; `dev_root` is a fresh,
+isolated `C:\Users\dking\DayZTestServer2\_mcp_dev_vanilla` (own
+`_server`/`_client` profile dirs, own `serverDZ.cfg` copied from the
+proven `DayZ_MCP` one — same two required lines, `allowFilePatching = 1;`
+and `verifySignatures = 0;` — with `hostname`/`shardId`/`instanceId` changed
+so the two projects never collide); `mission_roots`/`mod_roots` reuse the
+existing `DayZTestServer2` missions and `@DayZ_MCP` mod rather than
+duplicating them, so this NEVER touches the owner's real
+`D:\SteamLibrary\...\DayZ\mpmissions`/`!Workshop` (his own saves, mods,
+crash logs stay untouched).
+
+**A second, independent hardcoded-path assumption found and worked around,
+not fixed**: `build_native_launcher.py`'s own reproducible-build step
+(`tools\dayz_mcp\dayz_tools_paths.py::require_dayz_layout()`) derives the
+Diag path it hashes into the build manifest as a SIBLING of the `DayZ Tools`
+install (`<DayZ Tools>\..\DayZ\DayZDiag_x64.exe`) — the exact folder just
+wiped. This is a BUILD-TIME-ONLY input (confirmed: no reference to it
+anywhere in the sealed launcher's own source, `native-launchers\dayz-test-v1\
+src\`) — it hashes a copy of the real exe into the manifest for
+reproducibility, it does NOT pin which install the daemon may route to at
+runtime. Fix applied: restored `C:\Program Files (x86)\Steam\steamapps\
+common\DayZ\DayZDiag_x64.exe` — a byte-identical copy from the real vanilla
+install (`sha256sum` VERIFIED: `34f6377be4fd065d104e67263e0c96ac2cb2e348119
+a4838eba08d2e61b7a69a` on both sides), not the old orphan. Not touched:
+`DAYZ_TOOLS_PATH` env var, `dayz_tools_paths.py` itself. Left as a known,
+documented dependency rather than a hidden trap for the next build.
+
+**Regression check**: `pytest tools\tests\test_process_lifecycle.py
+tools\tests\test_run_reaper.py` — 204 passed, 3 pre-existing failures
+(`activity_state` timing, `test_credit_during_failed_launch_wait_is_
+tombstoned_post_rollback_kept` and two siblings) VERIFIED unrelated —
+reproduced identically on the pre-change code via `git stash`. The 2 tests
+targeting the executable-identity check by name (`-k "game_path or
+canonical or executable"`) both pass.
+
+**Reseal recipe used, exactly the documented one**: Diag build-input
+restored → `python build_native_launcher.py --verify-reproducible --offline`
+(`pe_sha256: EB09E6A764958783B9FCC515F2AB5870720C16A9EEBBAE0B4509529F688731
+3A`) → `sha256sum approved-launchers.json`, UPPERCASED (the registry tool's
+`_valid_sha` only accepts uppercase hex — lowercase failed silently as a
+generic `invalid_launcher_registry_update`, no detail in the error; a real
+gotcha, worth remembering) → `python -m dayz_mcp.launcher_registry_update
+replace-dayz-test-v1 --expected-sha256 <uppercased registry-file hash>` →
+read back `approved-launchers.json` — VERIFIED new `"sha256"` field equals
+the build's `pe_sha256` exactly.
+
+**Live proof, both projects, same daemon, no toggling**: killed the daemon
+(new `daemon_generation` on respawn confirms fresh code loaded) →
+`dayz_test_run(project="DayZ_MCP_Vanilla", mode="server", mission="livonia",
+extra_mods=["@DayZ_MCP"])` — first attempt hit `bridge_mod_missing`
+(expected/documented: a project whose name isn't `DayZ_MCP` must pass
+`extra_mods=["@DayZ_MCP"]` explicitly, `base_mods`/`server_mods` don't
+count) — retried with it, VERIFIED `status: "succeeded"`, `server_alive:
+true`, `error_code: null`. Stopped it clean, then re-ran
+`dayz_test_run(project="DayZ_MCP", mode="server", mission="livonia")` (the
+ORIGINAL Experimental project) — VERIFIED same success, no regression.
+Both installs work side by side on the same daemon generation, no config
+swap between them. Stopped and cleaned up.
+
+**Not yet re-tested**: `mode="all"` (client+bridge reads) against
+`DayZ_MCP_Vanilla` specifically — tonight only proved the headless
+`mode="server"` path (which is exactly where the fixed check lives) for
+both projects. Worth a `mode=all` pass next time this sandbox is used for
+real, same as the still-open read-recheck from the entry above.
+
+**Committed, not yet pushed at write time**: `tools\dayz_mcp\daemon.py`,
+`tools\dayz_mcp\process_lifecycle.py`. `%LOCALAPPDATA%\DayZ_MCP\
+launcher-policy.json`, the rebuilt `native-launchers\dayz-test-v1\` bundle,
+and `approved-launchers.json` are per-machine / gitignored build output, not
+committed — same as every other machine-specific artifact this project
+already excludes.

@@ -1220,6 +1220,12 @@ class ProcessLifecycle:
         bridge_probe: object | None = None,
         daemon_generation: str | None = None,
         steam_gate: object | None = None,
+        # Additional install roots a request's executable is also allowed to
+        # resolve under, beyond `game_path` -- multiple registered projects can
+        # point at different DayZ installs (see daemon.py's
+        # _resolve_extra_dayz_game_paths). `game_path` stays first/primary for
+        # every existing caller that does not pass this.
+        extra_game_paths: tuple[Path, ...] = (),
     ) -> None:
         self.coordinator = coordinator
         self.manifest = manifest
@@ -1229,6 +1235,14 @@ class ProcessLifecycle:
         self.diag_probe = diag_probe
         self.port_probe = port_probe
         self.game_path = Path(game_path).resolve()
+        # Order preserved, de-duplicated: game_path first, then each distinct
+        # extra root. _canonical_error checks a requested executable against
+        # every one of these, not just the primary.
+        self.game_paths: tuple[Path, ...] = tuple(
+            dict.fromkeys(
+                [self.game_path, *(Path(p).resolve() for p in extra_game_paths)]
+            )
+        )
         self.launcher = launcher or self._launch
         self.steam_gate = steam_gate if steam_gate is not None else SteamPreparationGate()
         self.id_fn = id_fn or (lambda: uuid.uuid4().hex)
@@ -1779,13 +1793,17 @@ class ProcessLifecycle:
 
     def _canonical_error(self, executable: Path) -> str | None:
         canonical = executable.resolve()
-        diag = (self.game_path / "DayZDiag_x64.exe").resolve()
-        retail = {
-            os.path.normcase(str((self.game_path / "DayZ_BE.exe").resolve())),
-            os.path.normcase(str((self.game_path / "DayZ_x64.exe").resolve())),
-        }
         normalized = os.path.normcase(str(canonical))
-        if normalized == os.path.normcase(str(diag)):
+        diags = {
+            os.path.normcase(str((root / "DayZDiag_x64.exe").resolve()))
+            for root in self.game_paths
+        }
+        retail = {
+            os.path.normcase(str((root / name).resolve()))
+            for root in self.game_paths
+            for name in ("DayZ_BE.exe", "DayZ_x64.exe")
+        }
+        if normalized in diags:
             return None
         if normalized in retail:
             return "retail_manual_lifecycle_required"

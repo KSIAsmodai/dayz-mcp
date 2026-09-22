@@ -364,9 +364,11 @@ _DAYZ_GAME_PATH_CANDIDATES = (
     r"C:\Program Files (x86)\Steam\steamapps\common\DayZ",
 )
 
+_LAUNCHER_POLICY_ENV = "DAYZ_MCP_LAUNCHER_POLICY"
+
 
 def _resolve_dayz_game_path() -> Path:
-    """The game install root ProcessLifecycle checks launch requests against.
+    """The primary game install root ProcessLifecycle checks launch requests against.
 
     A blind default can point at an install tree with no real
     DayZDiag_x64.exe -- this machine's real client lives under the
@@ -390,6 +392,63 @@ def _resolve_dayz_game_path() -> Path:
         if (path / "DayZDiag_x64.exe").is_file():
             return path
     return Path(env_value) if env_value else Path(default)
+
+
+def _launcher_policy_path() -> Path | None:
+    """Same locate order build_native_launcher.py documents: env var, then
+    %LOCALAPPDATA%\\DayZ_MCP\\launcher-policy.json. None if neither resolves --
+    this is a best-effort read, never a hard requirement (see
+    _resolve_extra_dayz_game_paths)."""
+    env_value = os.environ.get(_LAUNCHER_POLICY_ENV)
+    if env_value:
+        return Path(env_value)
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return None
+    return Path(local) / "DayZ_MCP" / "launcher-policy.json"
+
+
+def _resolve_extra_dayz_game_paths() -> tuple[Path, ...]:
+    """Every OTHER registered project's game install root, beyond the single
+    primary _resolve_dayz_game_path() picks.
+
+    Multiple projects in launcher-policy.json can point at different DayZ
+    installs (e.g. one Experimental, one a vanilla/stable client on another
+    drive) -- the daemon's executable-identity check must accept a launch
+    request for ANY of them, not just whichever one the primary resolver
+    happens to pick first. This reads the SAME live, non-sealed policy file
+    the setup checklist already has the owner edit by hand (ARCHIVE_NOTES.md,
+    "Per-machine setup checklist") -- editing it to add a project's
+    game_directory takes effect on the next daemon spawn, no rebuild/reseal
+    needed (daemon.py is live-imported, unlike the sealed native launcher).
+
+    Best-effort and silent on any problem -- a missing, unreadable, or
+    malformed policy file changes nothing: _resolve_dayz_game_path()'s
+    existing behavior is the floor, never regressed by this. Only entries
+    whose game_directory actually contains DayZDiag_x64.exe are returned, so
+    a stale or wrong path in the policy file is simply not added, not a new
+    silent-wrong-path failure mode.
+    """
+    policy_path = _launcher_policy_path()
+    if policy_path is None:
+        return ()
+    try:
+        data = json.loads(policy_path.read_bytes().decode("utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(data, dict):
+        return ()
+    paths: list[Path] = []
+    for project in data.get("projects") or []:
+        if not isinstance(project, dict):
+            continue
+        game_directory = project.get("game_directory")
+        if not isinstance(game_directory, str) or not game_directory.strip():
+            continue
+        candidate = Path(game_directory)
+        if (candidate / "DayZDiag_x64.exe").is_file():
+            paths.append(candidate)
+    return tuple(paths)
 
 
 def _activate_server_coordination(
@@ -583,6 +642,7 @@ def _activate_server_coordination(
         # the box; a DayZ image holding a UDP port occupies it without a run.
         port_probe=orphan_guard.snapshot_udp_port_holders,
         game_path=_resolve_dayz_game_path(),
+        extra_game_paths=_resolve_extra_dayz_game_paths(),
         recovery_fault_arm=arm_lifecycle_recovery_fault,
         bindings=state,
         # 79e2: the same ServerState, read-only, so start_run can revalidate a
