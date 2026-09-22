@@ -1601,3 +1601,48 @@ it (`daemon_identity_unverified` in the sealed bundle's own accreditation
 call, `executable_not_allowed` from a stale hardcoded game path) are fixed,
 verified live, committed, and pushed. Update the roadmap's own status line
 to reflect this the next time that file is touched.
+
+## 2026-09-22 — reads re-check: daemon-side ready confirmed; new finding, a client-side MCP tool-cache gap (not a dayz-mcp bug)
+
+Follow-up session, per the prior entry's own open item ("reads were still
+open... worth a quick re-check next session"). Launched a fresh
+`dayz_test_run(project="DayZ_MCP", mode="all", mission="livonia")` — VERIFIED
+`status: "succeeded"`, ran clean. Waited out the same ~30-40s handshake lag
+documented above (`wait_for(log_matches, pattern="MCP-CLIENT")` caught the
+client bridge's first poll), then `bridge_status` — VERIFIED
+`ready.ready: true`, both peers `binding_state: "BOUND"`,
+`capabilities.state: "match"` on both, server side explicitly listing
+`query_all_players`/`entities_query`/`surface_query`/`query_player_state` as
+`registered_bridge_tools` matched against `announced_commands`. Owner then
+played the client live for a stretch — direct human confirmation the
+game_path fix holds for real interactive play, not just the automated
+smoke path.
+
+**Could not literally call the read tools this session — new, distinct
+finding.** `session_acquire_wait` granted a lease fine (progressive
+disclosure fired daemon-side: capabilities went from the pre-lease set to
+the full list). But THIS chat session's own MCP client connection to
+`dayz-mcp` had already cached its `tools/list` result at connection time —
+17 tools (the no-lease set) — and never re-fetched after the lease grant.
+Calling `mcp__dayz-mcp__query_all_players` directly failed `No such tool
+available`; `ToolSearch` (this harness's deferred-tool lookup) couldn't find
+it either — confirmed via `mcp__ccd_connectors__session_connectors_status`,
+which reported `dayz-mcp` connected with a frozen `tool_count: 17` for the
+whole session. This is a **harness-side tool-list staleness gap in the
+Claude Code app**, not a dayz-mcp regression — the 2026-09-19 entry above
+already proved `query_all_players` et al. return real data once actually
+called (`ok:1` with a live player record). Considered running
+`tools\dz_mcp_smoke.py` as a workaround (it drives its own fresh MCP
+client) but declined: its own module docstring warns a second competing
+`--client` connection racing the registered client's daemon-autospawn can
+silently poison that client's autospawn latch — not worth the risk to
+sidestep a read-only verification gap when the daemon side is already
+proven ready. A fresh session (new MCP connection) should pick up the full
+63-tool list and can exercise the reads directly next time; no code fix
+needed here, no roadmap item opened for it — recorded so the next session
+doesn't re-diagnose the same "why can't I see query_all_players" confusion
+from scratch.
+
+Cleaned up after: `dayz_test_stop` — VERIFIED `status: "succeeded"`,
+`stop_method: "forced_kill"`; `session_status` afterward — VERIFIED
+`box.occupied: false`, run retired, zero lingering state.
