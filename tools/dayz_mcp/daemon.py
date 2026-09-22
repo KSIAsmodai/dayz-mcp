@@ -359,6 +359,39 @@ def build_server_state(
     return state
 
 
+_DAYZ_GAME_PATH_CANDIDATES = (
+    r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Exp",
+    r"C:\Program Files (x86)\Steam\steamapps\common\DayZ",
+)
+
+
+def _resolve_dayz_game_path() -> Path:
+    """The game install root ProcessLifecycle checks launch requests against.
+
+    A blind default can point at an install tree with no real
+    DayZDiag_x64.exe -- this machine's real client lives under the
+    Experimental branch, not the plain Steam path, and every legitimate
+    start request failed executable_not_allowed against the old hardcoded
+    default (ARCHIVE_NOTES.md, 2026-09-21). Accept the first candidate that
+    actually contains the executable; DAYZ_GAME_PATH is checked first if
+    set, so an explicit override still wins over the built-in guesses. If
+    nothing qualifies, fall back to the original behavior (the env var if
+    set, else the plain Steam path) rather than invent a new wrong path --
+    the existing executable_not_allowed error stays the visible failure
+    mode, unchanged from before this fix.
+    """
+    env_value = os.environ.get("DAYZ_GAME_PATH")
+    default = _DAYZ_GAME_PATH_CANDIDATES[-1]
+    candidates = ([env_value] if env_value else []) + list(
+        _DAYZ_GAME_PATH_CANDIDATES
+    )
+    for candidate in candidates:
+        path = Path(candidate)
+        if (path / "DayZDiag_x64.exe").is_file():
+            return path
+    return Path(env_value) if env_value else Path(default)
+
+
 def _activate_server_coordination(
     state: ServerState,
     daemon_generation: str,
@@ -549,12 +582,7 @@ def _activate_server_coordination(
         # fb-20260904-114520-6927: the socket table is the second witness of
         # the box; a DayZ image holding a UDP port occupies it without a run.
         port_probe=orphan_guard.snapshot_udp_port_holders,
-        game_path=Path(
-            os.environ.get(
-                "DAYZ_GAME_PATH",
-                r"C:\Program Files (x86)\Steam\steamapps\common\DayZ",
-            )
-        ),
+        game_path=_resolve_dayz_game_path(),
         recovery_fault_arm=arm_lifecycle_recovery_fault,
         bindings=state,
         # 79e2: the same ServerState, read-only, so start_run can revalidate a
