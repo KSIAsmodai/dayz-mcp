@@ -454,5 +454,118 @@ class SteamInvokeFlagsTests(unittest.TestCase):
         self.assertIs(seen[0]["close_fds"], True)
 
 
+class _FakeKey:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+class RealHiveFallbackTests(unittest.TestCase):
+    """MSIX HKCU virtualization: the direct read can be stale; real hive via WMI."""
+
+    def _read(self, direct, *, alive=True, real=None):
+        """Run read_active_process with winreg, liveness and the WMI helper faked."""
+        import winreg
+
+        provider = steam_preflight.WindowsSteamPreflightProvider()
+
+        def query(_key, name):
+            if isinstance(direct, BaseException):
+                raise direct
+            return ({"pid": direct[0], "ActiveUser": direct[1]}[name], 4)
+
+        def open_key(*_args):
+            if isinstance(direct, BaseException):
+                raise direct
+            return _FakeKey()
+
+        helper_calls: list[int] = []
+
+        def helper(_self):
+            helper_calls.append(1)
+            return real
+
+        with patch.object(winreg, "OpenKey", open_key), \
+                patch.object(winreg, "QueryValueEx", query), \
+                patch.object(
+                    steam_preflight.WindowsSteamPreflightProvider,
+                    "process_exists",
+                    lambda _self, _pid: alive,
+                ), \
+                patch.object(
+                    steam_preflight.WindowsSteamPreflightProvider,
+                    "_read_active_process_real_hive",
+                    helper,
+                ):
+            try:
+                result = provider.read_active_process()
+            except OSError as exc:
+                result = exc
+        return result, len(helper_calls)
+
+    def test_healthy_direct_read_never_calls_real_hive(self) -> None:
+        result, calls = self._read((41, 7), real=active_process(99, 5))
+        self.assertEqual(result, active_process(41, 7))
+        self.assertEqual(calls, 0)
+
+    def test_direct_pid_zero_uses_real_hive(self) -> None:
+        result, calls = self._read((0, 0), alive=False, real=active_process(46052, 1069879716))
+        self.assertEqual(result, active_process(46052, 1069879716))
+        self.assertEqual(calls, 1)
+
+    def test_direct_dead_pid_uses_real_hive(self) -> None:
+        result, calls = self._read((41, 7), alive=False, real=active_process(46052, 5))
+        self.assertEqual(result, active_process(46052, 5))
+        self.assertEqual(calls, 1)
+
+    def test_direct_filenotfound_uses_real_hive(self) -> None:
+        result, calls = self._read(FileNotFoundError("pid"), real=active_process(46052, 5))
+        self.assertEqual(result, active_process(46052, 5))
+        self.assertEqual(calls, 1)
+
+    def test_both_fail_reraises_original_oserror(self) -> None:
+        error = FileNotFoundError("pid")
+        result, calls = self._read(error, real=None)
+        self.assertIs(result, error)
+        self.assertEqual(calls, 1)
+
+    def test_both_fail_returns_direct_snapshot(self) -> None:
+        for real in (None, active_process(0, 0)):
+            with self.subTest(real=real):
+                result, calls = self._read((0, 0), alive=False, real=real)
+                self.assertEqual(result, active_process(0, 0))
+                self.assertEqual(calls, 1)
+
+    def test_real_hive_helper_never_raises(self) -> None:
+        provider = steam_preflight.WindowsSteamPreflightProvider()
+        done = lambda rc, out: subprocess.CompletedProcess([], rc, stdout=out, stderr=b"")
+        cases = [
+            subprocess.TimeoutExpired("powershell.exe", 15),
+            FileNotFoundError("powershell.exe"),
+            done(3, b""),
+            done(0, b"abc\r\n7\r\n"),
+            done(0, b"41\r\n"),
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                def fake_run(*_a, **_k):
+                    if isinstance(case, BaseException):
+                        raise case
+                    return case
+
+                with patch.object(steam_preflight.subprocess, "run", fake_run):
+                    self.assertIsNone(provider._read_active_process_real_hive())
+
+    def test_real_hive_helper_parses_two_integers(self) -> None:
+        provider = steam_preflight.WindowsSteamPreflightProvider()
+        out = subprocess.CompletedProcess([], 0, stdout=b"46052\r\n1069879716\r\n", stderr=b"")
+        with patch.object(steam_preflight.subprocess, "run", lambda *a, **k: out):
+            self.assertEqual(
+                provider._read_active_process_real_hive(), active_process(46052, 1069879716)
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

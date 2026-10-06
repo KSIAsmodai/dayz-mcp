@@ -122,9 +122,68 @@ class WindowsSteamPreflightProvider:
     def read_active_process(self) -> SteamActiveProcessSnapshot:
         import winreg
 
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _ACTIVE_PROCESS_KEY) as key:
-            pid, _ = winreg.QueryValueEx(key, "pid")
-            active_user, _ = winreg.QueryValueEx(key, "ActiveUser")
+        # MSIX-packaged hosts (the Claude desktop app and every process it spawns)
+        # see a virtualized HKCU, and the package hive can hold a stale copy of
+        # Steam's ActiveProcess key. The direct read stays first and authoritative
+        # when it names a live process; only a failed/unusable/dead-pid direct
+        # read falls through to a read of the real hive (WMI StdRegProv runs
+        # outside the package).
+        direct: SteamActiveProcessSnapshot | None = None
+        direct_error: OSError | None = None
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _ACTIVE_PROCESS_KEY) as key:
+                pid, _ = winreg.QueryValueEx(key, "pid")
+                active_user, _ = winreg.QueryValueEx(key, "ActiveUser")
+            direct = SteamActiveProcessSnapshot(pid=pid, active_user=active_user)
+        except OSError as exc:
+            direct_error = exc
+        if direct is not None and _is_int(direct.pid) and direct.pid > 0:
+            try:
+                alive = self.process_exists(direct.pid)
+            except Exception:
+                alive = False
+            if alive:
+                return direct
+        real = self._read_active_process_real_hive()
+        if real is not None and _is_int(real.pid) and real.pid > 0:
+            return real
+        if direct_error is not None:
+            raise direct_error
+        assert direct is not None
+        return direct
+
+    def _read_active_process_real_hive(self) -> SteamActiveProcessSnapshot | None:
+        """Read pid/ActiveUser from the real HKU\\<sid> hive via WMI StdRegProv.
+
+        Never raises: any failure (timeout, non-zero exit, parse error,
+        ReturnValue != 0) returns None. Read-only.
+        """
+        script = (
+            "$ErrorActionPreference='Stop';"
+            "$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+            "$k=\"$sid\\Software\\Valve\\Steam\\ActiveProcess\";"
+            "foreach($n in 'pid','ActiveUser'){"
+            "$r=Invoke-CimMethod -Namespace root/default -ClassName StdRegProv"
+            " -MethodName GetDWORDValue -Arguments @{hDefKey=[uint32]2147483651;"
+            "sSubKeyName=$k;sValueName=$n};"
+            "if($r.ReturnValue -ne 0){exit 3};"
+            "[Console]::Out.WriteLine([string]$r.uValue)}"
+        )
+        try:
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True,
+                timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if completed.returncode != 0:
+                return None
+            lines = completed.stdout.decode("ascii", "replace").split()
+            if len(lines) != 2:
+                return None
+            pid, active_user = int(lines[0]), int(lines[1])
+        except Exception:
+            return None
         return SteamActiveProcessSnapshot(pid=pid, active_user=active_user)
 
     def process_exists(self, pid: int) -> bool:
