@@ -1647,6 +1647,8 @@ Cleaned up after: `dayz_test_stop` — VERIFIED `status: "succeeded"`,
 `stop_method: "forced_kill"`; `session_status` afterward — VERIFIED
 `box.occupied: false`, run retired, zero lingering state.
 
+**Correction 2026-10-07 (source wins).** This entry's diagnosis is wrong on two counts. It is not a harness gap: dayz-mcp advertises `capabilities.tools.listChanged = false`, and Claude Code only subscribes to `notifications/tools/list_changed` from servers that declare it, so the notification `session_acquire_wait` sends is dropped. And a fresh session does not get the full 63-tool list: a new MCP process holds no lease, so progressive disclosure hands it the same 17 tools. Full chain in the 2026-10-07 entry at the end of this file.
+
 ## 2026-09-22 — daemon game_path check made multi-install-aware; a real vanilla (non-Experimental) sandbox now exists
 
 Owner's ask: he doesn't want to test on DayZ Experimental. He wants to "build
@@ -1810,3 +1812,25 @@ launcher-policy.json`, the rebuilt `native-launchers\dayz-test-v1\` bundle,
 and `approved-launchers.json` are per-machine / gitignored build output, not
 committed — same as every other machine-specific artifact this project
 already excludes.
+
+## 2026-10-07 — why Claude sessions never see the bridge verbs: the server tells the host it will not announce tool-list changes
+
+Trigger: rig run `581d8835-c382-47c6-864a-28eab68c3784` (project DayZ_MCP_Vanilla, port 2502) reached `bridge_status` ready=true with both peers BOUND and announcing their commands, yet ToolSearch found none of `query_player_state`, `surface_query`, `entities_query`, `scene_raycast`, `telemetry_read`, `object_inspect`, `logs_since` and the rest, in the main session or in a full-tool helper. The lead handed over was the tool-pack filter.
+
+**The tool pack is not it.** VERIFIED: the Claude Code registration for `dayz-mcp` (user MCP config, `mcpServers.dayz-mcp`) runs `python -m dayz_mcp --client --keyfile <key> --port 8765 --require-version --idle-timeout 1800 --client-platform claude` with an empty `env`; no `--tool-pack`; `DAYZ_MCP_TOOL_PACK` is unset at user, machine and process level; every live `--client` process on the tower carries the same argv. So `tool_pack="full"` (`tools/dayz_mcp/server.py:7196-7203`). Packs: `full` = no filter (63 tools, MEASURED in-process via `build_app`); `local8b` = 16 lifecycle tools (`tools/dayz_mcp/tool_pack.py:12-36`).
+
+**The real chain, one line per hop:**
+1. Client-mode progressive disclosure (fb-20260917-092908-2ad1): until this MCP process holds a lease, `tools/list` returns only `_INITIAL_CATALOG_NAMES`, descriptions cut to 80 chars — VERIFIED `server.py:627-689` and `7176-7187`; MEASURED 17 tools, 10,553 bytes. Those 17 are exactly the set the sessions saw, `lease_acquire` included.
+2. A lease grant through `session_acquire_wait` / `lease_acquire` sends `notifications/tools/list_changed` — VERIFIED `server.py:4719-4723`; context injection works (MEASURED `context_kwarg=ctx` on both tools).
+3. The server advertises `capabilities.tools.listChanged = false` at initialize: `app.run(transport="stdio")` (`server.py:7324`) reaches FastMCP `run_stdio_async`, which passes `create_initialization_options()` with a default `NotificationOptions()` (mcp 1.27.2: `mcp/server/fastmcp/server.py:759`, `mcp/server/lowlevel/server.py:117,217`); dayz_mcp never overrides it (zero hits for `NotificationOptions` / `tools_changed` in `tools/dayz_mcp/`). MEASURED in-process: `listChanged=False`.
+4. Claude Code 2.1.289 registers its tools/list_changed refetch handler only for servers that declared `tools.listChanged` — VERIFIED in the bundled JS inside the shipped binary (`if(!s.capabilities?.tools?.listChanged)continue;` before `onMcpToolListChanged`, and the same guard at two other sites). The notification is dropped and the host catalog stays at the 17 pre-lease tools (`session_connectors_status` tool_count 17, as on 2026-09-22). The Claude Code docs say list_changed is supported (OFFICIAL, code.claude.com/docs/en/mcp) — true, for servers that declare it.
+
+**Same root cause, second symptom (INFERRED, same capability gate, not live-tested):** the HANDOFF trap "reopen the MCP client after a promotion; reloading the worker does not refresh the catalog". The supervisor's recycle also sends list_changed (`tools/dayz_mcp/mcp_supervisor.py:305`) into the same dropped channel.
+
+**Options, smallest first, with the token cost per Claude session** (bytes MEASURED; tokens estimated as bytes/4):
+- **A (recommended): declare `tools.listChanged: true` in dayz-mcp.** In `build_app`, wrap `app._mcp_server.create_initialization_options` so it defaults to `NotificationOptions(tools_changed=True)`; a few lines plus a test asserting the initialize capability. No MCP-config or user-settings change; progressive disclosure and the 8B budget stay as designed. Before a lease nothing changes (17 tools). After `session_acquire_wait` the host refetches and the 46 hidden tools join that session's deferred-tool list: about 1.3 KB of names (~350 tokens), only in sessions that take a lease; each schema loads on demand through ToolSearch (about 1 KB per tool; all 63 would be about 66 KB, ~17k tokens, if loaded wholesale). Takes effect in the next new session (new MCP process). Also clears the promotion-refresh trap. Caveats: a tool revealed mid-turn may become callable only from the next turn (ANECDOTE, a third-party server's note); `session_release` sends no list_changed, so revealed names stay listed after release (calls then hit the daemon's lease checks — INFERRED).
+- **B: opt-out flag for progressive disclosure** (new `--full-catalog`, default off) added to the Claude registration args. Code change plus a governance change (user MCP config). Every Claude session, DayZ work or not, carries the 46 extra deferred names (~350 tokens) from the first turn; schemas on demand; no lease needed to see the verbs.
+- **C: a second MCP entry holding only the observation verbs — rejected.** The lease lives per MCP process (`server.py:656-668`, `tools/dayz_mcp/control_client.py:380-397`), so a second process would not hold the first one's lease; a second `--client` racing the daemon autospawn is the latch hazard recorded 2026-09-22; and it adds a Python process pair per session.
+- **D: one generic passthrough tool** (`bridge_call(verb, args)` in the initial catalog) — loses the typed schemas and is a larger change.
+
+**Status:** proposal only; no code or config changed. Waiting on the owner's yes for A. Canary for A: fresh session → `session_connectors_status` shows dayz-mcp at 17 → `session_acquire_wait` → next turn tool_count 63 and ToolSearch `select:mcp__dayz-mcp__query_player_state` returns a schema → `session_release`.
