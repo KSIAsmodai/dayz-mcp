@@ -22,6 +22,8 @@ from typing import Annotated, Any, Awaitable, Callable, Iterator, Literal
 import anyio
 from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.lowlevel import NotificationOptions
+from mcp.server.models import InitializationOptions
 from pydantic import Field, StrictBool, StrictFloat, StrictInt, StrictStr
 
 import mcp_capture
@@ -7185,6 +7187,26 @@ def build_app(config: ServerConfig) -> tuple[FastMCP, Any]:
     # full catalog; re-register so MCP clients see the compact list.
     app.list_tools = list_tools_progressive  # type: ignore[method-assign]
     app._mcp_server.list_tools()(list_tools_progressive)
+
+    # Hosts gate their tools/list refetch on the declared listChanged
+    # capability, and this server sends list_changed on lease grant and on
+    # supervisor recycle. FastMCP's stdio runner builds the initialize options
+    # with no arguments, which would declare tools.listChanged=false.
+    _create_initialization_options = app._mcp_server.create_initialization_options
+
+    def create_initialization_options_list_changed(
+        notification_options: NotificationOptions | None = None,
+        experimental_capabilities: dict[str, dict[str, Any]] | None = None,
+    ) -> InitializationOptions:
+        if notification_options is None:
+            notification_options = NotificationOptions(tools_changed=True)
+        return _create_initialization_options(
+            notification_options, experimental_capabilities
+        )
+
+    app._mcp_server.create_initialization_options = (  # type: ignore[method-assign]
+        create_initialization_options_list_changed
+    )
     return app, runtime
 
 

@@ -39,6 +39,7 @@ if sys.platform != "win32":
         ),
     )
 
+from mcp.server.lowlevel import NotificationOptions
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from dayz_mcp.server import ServerConfig, build_app
@@ -172,6 +173,30 @@ class ProgressiveDisclosureTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("vehicle_enter", after)
         self.assertIn("ui_click", after)
         self.assertGreater(_catalog_bytes(after_tools), INITIAL_CATALOG_MAX_BYTES)
+
+    async def test_initialization_options_declare_tools_list_changed(self) -> None:
+        app, _runtime = self._client_app()
+        capabilities = app._mcp_server.create_initialization_options().capabilities
+        self.assertIsNotNone(capabilities.tools)
+        self.assertIs(capabilities.tools.listChanged, True)
+
+    async def test_explicit_notification_options_are_not_overridden(self) -> None:
+        app, _runtime = self._client_app()
+        options = app._mcp_server.create_initialization_options(
+            notification_options=NotificationOptions(tools_changed=False)
+        )
+        self.assertIsNotNone(options.capabilities.tools)
+        self.assertIs(options.capabilities.tools.listChanged, False)
+
+    async def test_protocol_initialize_declares_tools_list_changed(self) -> None:
+        app, _runtime = self._client_app()
+        async with create_connected_server_and_client_session(
+            app._mcp_server
+        ) as session:
+            capabilities = session.get_server_capabilities()
+        self.assertIsNotNone(capabilities)
+        self.assertIsNotNone(capabilities.tools)
+        self.assertIs(capabilities.tools.listChanged, True)
 
 
 if __name__ == "__main__":
