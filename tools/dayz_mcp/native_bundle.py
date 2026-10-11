@@ -177,6 +177,49 @@ def _is_trusted_gac_microsoft_visual_basic(path: str, windows_directory: str) ->
     )
 
 
+# Bitdefender loads its in-process protection modules into every new process
+# while its behavioural shield is active. On 2026-10-11 it began doing so
+# mid-session and the gate rejected bdhkm64.dll in the launcher tree as
+# unapproved_debug_image, so every run failed before lifecycle_start. Each
+# module lives at <Program Files>\Bitdefender\Bitdefender Security\<component>
+# \dlls_<digits>\<name>, writable only by administrators and Bitdefender's own
+# self-protection: the same location trust the System32 rule relies on. Only
+# the component/name pairs found on disk are listed, both bitnesses because the
+# .NET AddonBuilder runs 32-bit. Program Files is derived from the system drive,
+# so a relocated Program Files fails closed.
+_BITDEFENDER_INJECTED_MODULES = {
+    "atcuf": frozenset({"atcuf32.dll", "atcuf64.dll"}),
+    "bdamsi": frozenset({"antimalware_provider32.dll", "antimalware_provider64.dll"}),
+    "bdhkm": frozenset({"bdhkm32.dll", "bdhkm64.dll"}),
+}
+
+
+def _is_trusted_bitdefender_injected_module(path: str, windows_directory: str) -> bool:
+    drive = PureWindowsPath(windows_directory).drive
+    if not drive:
+        return False
+    product_root = ntpath.join(
+        drive + "\\", "Program Files", "Bitdefender", "Bitdefender Security"
+    )
+    if not _inside_directory(path, product_root):
+        return False
+    relative = ntpath.relpath(ntpath.normpath(path), ntpath.normpath(product_root))
+    parts = PureWindowsPath(relative).parts
+    if len(parts) != 3:
+        return False
+    component, version_folder, name = (part.casefold() for part in parts)
+    names = _BITDEFENDER_INJECTED_MODULES.get(component)
+    if names is None or name not in names:
+        return False
+    prefix = "dlls_"
+    version = version_folder[len(prefix) :]
+    return (
+        version_folder.startswith(prefix)
+        and version.isascii()
+        and version.isdigit()
+    )
+
+
 @dataclass(frozen=True)
 class DebugProcessDescriptor:
     kind: BrokerKind
@@ -230,6 +273,7 @@ class DebugImageAuthority:
             )
             or _is_trusted_winsxs_common_controls(path, str(windows_directory))
             or _is_trusted_gac_microsoft_visual_basic(path, str(windows_directory))
+            or _is_trusted_bitdefender_injected_module(path, str(windows_directory))
         )
 
     def approve_announced_process(

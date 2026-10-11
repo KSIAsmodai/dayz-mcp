@@ -205,6 +205,57 @@ class NativeBundleTest(unittest.TestCase):
             self.assertFalse(authority.approve_debug_image(12, event_kind="CREATE_PROCESS"))
             self.assertFalse(authority.approve_debug_image(11, event_kind="UNKNOWN"))
 
+    def test_debug_image_authority_admits_only_bitdefender_injected_module_shapes(self) -> None:
+        # 2026-10-11: Bitdefender began injecting bdhkm64.dll into every new
+        # process and the gate failed every run as unapproved_debug_image.
+        # Only <Program Files>\Bitdefender\Bitdefender Security\<component>
+        # \dlls_<digits>\<listed name> passes; near misses stay rejected.
+        unknown = PathIdentity(1, "03" * 16)
+        authority = native_bundle.DebugImageAuthority(
+            process_identities=frozenset(),
+            module_identities=frozenset(),
+            system_directory=r"c:\windows\system32",
+        )
+        product = r"C:\Program Files\Bitdefender\Bitdefender Security"
+        approved = (
+            product + r"\bdhkm\dlls_268347289455896517\bdhkm64.dll",
+            product + r"\bdhkm\dlls_268347289455896517\bdhkm32.dll",
+            product + r"\atcuf\dlls_268678992173823444\atcuf64.dll",
+            product + r"\atcuf\dlls_268678992173823444\atcuf32.dll",
+            product + r"\bdamsi\dlls_267059357120000000\antimalware_provider64.dll",
+            product + r"\bdamsi\dlls_267059357120000000\antimalware_provider32.dll",
+            r"c:\program files\bitdefender\bitdefender security\BDHKM\DLLS_1\BDHKM64.DLL",
+        )
+        rejected = (
+            product + r"\bdhkm64.dll",
+            product + r"\bdhkm\bdhkm64.dll",
+            product + r"\bdhkm\dlls_\bdhkm64.dll",
+            product + r"\bdhkm\dlls_12a\bdhkm64.dll",
+            product + "\\bdhkm\\dlls_\u00b9\u00b2\\bdhkm64.dll",
+            product + r"\bdhkm\dlls_1\nested\bdhkm64.dll",
+            product + r"\bdhkm\dlls_1\other.dll",
+            product + r"\atcuf\dlls_1\bdhkm64.dll",
+            product + r"\unknown\dlls_1\bdhkm64.dll",
+            product + r"-evil\bdhkm\dlls_1\bdhkm64.dll",
+            r"C:\Program Files\Bitdefender\Bitdefender Security App\bdhkm\dlls_1\bdhkm64.dll",
+            r"C:\Program Files (x86)\Bitdefender\Bitdefender Security\bdhkm\dlls_1\bdhkm64.dll",
+            r"D:\Program Files\Bitdefender\Bitdefender Security\bdhkm\dlls_1\bdhkm64.dll",
+            r"C:\Users\host\Bitdefender\Bitdefender Security\bdhkm\dlls_1\bdhkm64.dll",
+        )
+        paths = dict(enumerate(approved + rejected, start=40))
+        with patch.object(native_bundle, "_file_identity", return_value=unknown), patch.object(
+            native_bundle, "_final_handle_path", side_effect=lambda handle: paths[handle]
+        ):
+            for handle, path in paths.items():
+                with self.subTest(path=path):
+                    self.assertEqual(
+                        authority.approve_debug_image(handle, event_kind="LOAD_DLL"),
+                        path in approved,
+                    )
+                    self.assertFalse(
+                        authority.approve_debug_image(handle, event_kind="CREATE_PROCESS")
+                    )
+
     def test_debug_image_authority_correlates_announcement_to_the_same_open_file(self) -> None:
         identity = PathIdentity(7, bytes(range(16)).hex().upper())
         descriptor = native_bundle.DebugProcessDescriptor(

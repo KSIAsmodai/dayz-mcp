@@ -577,6 +577,104 @@ class MCPToolsTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("drain_s", message, expected)
             self.assertNotIn("open_handles", message, expected)
 
+    async def test_gate_rejection_cause_is_persisted_locally_not_on_the_wire(self) -> None:
+        # 2026-10-11: every run failed as native_debug_gate_rejected:
+        # unapproved_debug_image and the DLL that tripped it was printed to an
+        # MCP stderr the host never keeps. The client failure log keeps it.
+        import tempfile
+
+        from dayz_mcp.native_launcher_backend import NativeLauncherBackendError
+        from tests.test_client_mode import _fixture_client_runtime
+
+        image = r"C:\Program Files\Vendor\hook\hook64.dll"
+        error = NativeLauncherBackendError(
+            "native_debug_gate_rejected",
+            f"unapproved_debug_image kind=LOAD_DLL pid=65228 image={image}",
+            fine_code="unapproved_debug_image",
+            event_kind="LOAD_DLL",
+            pid=65228,
+            image_path=image,
+        )
+
+        async def boom(*_args: object, **_kwargs: object) -> dict[str, Any]:
+            raise error
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "audit" / server_module.CLIENT_FAILURE_LOG_NAME
+            config = ServerConfig(
+                mode="client",
+                key=self.key,
+                port=12345,
+                client_platform="codex",
+                log_sink=lambda _message: None,
+                failure_log_path=str(log_path),
+            )
+            runtime = _fixture_client_runtime(config)
+            with patch.object(server_module, "ClientRuntime", return_value=runtime):
+                app, _built = build_app(config)
+
+            async def call() -> str:
+                with patch.object(
+                    server_module.dayz_test_tool, "execute_dayz_test_run", side_effect=boom
+                ):
+                    with self.assertRaises(Exception) as err:
+                        await app.call_tool(
+                            "dayz_test_run", {"project": "ExampleMod", "mode": "server"}
+                        )
+                _assert_tool_error(self, err.exception)
+                return str(err.exception)
+
+            # The daemon owns creating the audit dir: absent dir, nothing written.
+            message = await call()
+            self.assertFalse(log_path.parent.exists())
+            self.assertIn(
+                "dayz_test_failed:NativeLauncherBackendError:"
+                "native_debug_gate_rejected:unapproved_debug_image",
+                message,
+            )
+            self.assertNotIn("hook64", message)
+
+            log_path.parent.mkdir()
+            message = await call()
+            self.assertNotIn("hook64", message)
+            self.assertNotIn("Program Files", message)
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            record = json.loads(lines[0])
+            self.assertEqual(record["tool"], "dayz_test_run")
+            self.assertEqual(record["error_type"], "NativeLauncherBackendError")
+            self.assertEqual(record["code"], "native_debug_gate_rejected")
+            self.assertEqual(record["fine_code"], "unapproved_debug_image")
+            self.assertEqual(record["event_kind"], "LOAD_DLL")
+            self.assertEqual(record["event_pid"], 65228)
+            self.assertEqual(record["image_path"], image)
+            self.assertIn(f"image={image}", record["detail"])
+            self.assertIn("NativeLauncherBackendError", record["traceback"])
+            self.assertEqual(record["process_pid"], os.getpid())
+
+            # Past the cap the log rotates to one .1 copy and starts fresh.
+            with patch.object(server_module, "_CLIENT_FAILURE_LOG_MAX_BYTES", 1):
+                await call()
+            rotated = log_path.with_name(log_path.name + ".1")
+            self.assertEqual(len(rotated.read_text(encoding="utf-8").splitlines()), 1)
+            self.assertEqual(len(log_path.read_text(encoding="utf-8").splitlines()), 1)
+
+    async def test_failure_log_default_lives_in_the_runtime_audit_dir(self) -> None:
+        with patch.dict(os.environ, {"LOCALAPPDATA": r"C:\fixture-appdata"}):
+            self.assertEqual(
+                server_module._default_client_failure_log_path(),
+                str(
+                    Path(r"C:\fixture-appdata")
+                    / "DayZ_MCP"
+                    / "audit"
+                    / server_module.CLIENT_FAILURE_LOG_NAME
+                ),
+            )
+        with patch.dict(os.environ, {"LOCALAPPDATA": ""}):
+            self.assertIsNone(server_module._default_client_failure_log_path())
+        # A runtime without a path (every ServerConfig built in tests) writes nothing.
+        server_module._persist_opaque_failure(object(), "dayz_test_run", RuntimeError("x"))
+
     async def test_dayz_test_untyped_failure_carries_the_exception_type(self) -> None:
         # The bare `except Exception` swallowed the cause, which is exactly
         # what makes build:true undiagnosable. A non-existent `project` would NOT

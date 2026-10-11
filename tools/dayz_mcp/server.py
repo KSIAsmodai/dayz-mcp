@@ -78,6 +78,7 @@ from dayz_mcp.process_lifecycle import (
 )
 from dayz_mcp import session_handoff
 from dayz_mcp.mcp_supervisor import Supervisor
+from dayz_mcp.runtime_state import RuntimePaths
 from dayz_mcp.session_coordination import (
     READ_ONLY_COMMANDS,
     SESSION_TTL_S,
@@ -384,7 +385,13 @@ def _log_opaque_failure(runtime: Any, tool: str, exc: BaseException) -> None:
     full chain belongs there.
 
     Never raises: a diagnostic that masks the failure it describes is worse than none.
+
+    Claude hosts do not keep an MCP server's stderr, so on 2026-10-11 a
+    native_debug_gate_rejected cause (which DLL, in which process) was printed and
+    lost on every failed run. A client runtime given a failure log path also appends
+    the record there; see _persist_opaque_failure.
     """
+    _persist_opaque_failure(runtime, tool, exc)
     sink = getattr(runtime, "_log", None)
     if not callable(sink):
         return
@@ -398,6 +405,65 @@ def _log_opaque_failure(runtime: Any, tool: str, exc: BaseException) -> None:
             sink(f"[{tool}] opaque failure: {type(exc).__name__}")
         except Exception:
             pass
+
+
+CLIENT_FAILURE_LOG_NAME = "client-failures.jsonl"
+_CLIENT_FAILURE_LOG_MAX_BYTES = 1_048_576
+_CLIENT_FAILURE_TRACEBACK_CHARS = 16_000
+
+
+def _default_client_failure_log_path() -> str | None:
+    """`%LOCALAPPDATA%\\DayZ_MCP\\audit\\client-failures.jsonl`, or None without LOCALAPPDATA."""
+    try:
+        return str(RuntimePaths.from_env().audit_dir / CLIENT_FAILURE_LOG_NAME)
+    except RuntimeError:
+        return None
+
+
+def _persist_opaque_failure(runtime: Any, tool: str, exc: BaseException) -> None:
+    """Append one JSON line per opaque failure to the runtime's local failure log.
+
+    Local only, like the stderr copy: the record keeps the backend's code,
+    fine_code, debug event kind, pid, image path and detail, which may hold host
+    paths and never travel on the wire. Written only when the runtime carries a
+    path (production client mode; tests build ServerConfig without one), only into
+    a directory that already exists (the daemon owns creating the audit dir), and
+    rotated to a single `.1` copy past 1 MiB. Never raises.
+    """
+    path = getattr(runtime, "_failure_log_path", None)
+    if not isinstance(path, Path):
+        return
+    try:
+        if not path.parent.is_dir():
+            return
+        record: dict[str, Any] = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "tool": tool,
+            "process_pid": os.getpid(),
+            "error_type": type(exc).__name__,
+        }
+        for field in ("code", "fine_code", "event_kind", "image_path", "detail"):
+            value = getattr(exc, field, None)
+            if isinstance(value, str):
+                record[field] = value
+        event_pid = getattr(exc, "pid", None)
+        if type(event_pid) is int:
+            record["event_pid"] = event_pid
+        record["traceback"] = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        ).rstrip()[-_CLIENT_FAILURE_TRACEBACK_CHARS:]
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+        encoded = line.encode("utf-8")
+        try:
+            current = path.stat().st_size
+        except FileNotFoundError:
+            current = 0
+        if current and current + len(encoded) > _CLIENT_FAILURE_LOG_MAX_BYTES:
+            os.replace(path, path.with_name(path.name + ".1"))
+        with open(path, "ab") as handle:
+            handle.write(encoded)
+    except Exception:
+        pass
 
 
 def _wire_safe_error(runtime: Any, tool: str, detail: object) -> str:
@@ -1320,6 +1386,9 @@ class ServerConfig:
     exec_allowlist: str | None = None
     exec_audit_path: str | None = None
     log_sink: Callable[[str], None] | None = None
+    # Local JSONL that keeps the full cause of opaque tool failures (client mode).
+    # parse_args fills the default under LOCALAPPDATA; None disables it.
+    failure_log_path: str | None = None
     client_platform: str = "unknown"
     client_platform_raw: str = ""
     task_label: str = ""
@@ -1669,6 +1738,9 @@ class ClientRuntime:
         self._auto_spawn_daemon = bool(config.auto_spawn_daemon)
         self._spawn_attempted = False
         self._log = config.log_sink or (lambda message: print(message, file=sys.stderr, flush=True))
+        self._failure_log_path = (
+            Path(config.failure_log_path) if config.failure_log_path else None
+        )
         self._spawn_lock = threading.Lock()
         self._probe = probe_fn
         self._probe_key = config.key or ""
@@ -7241,6 +7313,7 @@ def parse_args(argv: list[str] | None = None) -> ServerConfig:
         enable_exec_enforce=bool(args.enable_exec_enforce),
         exec_allowlist=args.exec_allowlist,
         exec_audit_path=args.exec_audit_path,
+        failure_log_path=_default_client_failure_log_path(),
         client_platform=CLIENT_PLATFORM_ALIASES.get(
             args.client_platform, args.client_platform
         ),
