@@ -1893,3 +1893,12 @@ Trigger: rig run `581d8835-c382-47c6-864a-28eab68c3784` (project DayZ_MCP_Vanill
 **Not changed:** `tools/dependency-lock.json` (the per-machine MSVC pin; its sha still equals the contract's `dependency_lock_sha256`), the uncommitted `process_lifecycle.py` work, and the stale 1.29 `C:\Program Files (x86)\Steam\steamapps\common\DayZ\DayZDiag_x64.exe`. That last one is still the build-time DayZDiag input the closure pins (2026-09-22 entry); deleting it should break the next build (INFERRED from `require_dayz_layout`'s DayZDiag marker, `dayz_tools_paths.py:229-261`). The phantom `@DayZ_MCP_Vanilla` on argv is the known project-name mod quirk (2026-09-19 entry).
 
 **Next Steam update of DayZ Tools:** the same `invalid_native_launcher_bundle` on every run, preflight included. Fix: rebuild, `replace-dayz-test-v1`, then the lock check (README-mcp step 9).
+
+**5090 laptop, checked read-only from the tower 2026-10-21: broken the same way, not fixed.**
+- The laptop's own `checks\check_native_launcher_registry.py` reports `NATIVE LAUNCHER REGISTRY DRIFT` / `verify_bundle: ValueError: closure_size` (exit 1). VERIFIED.
+- A probe script hashed the 23 external closure entries; 21 match. The two drifted files:
+  - `DayZ Tools\Bin\Binarize\binarize.exe`: 17,424,384 B / `8DEA817B...` pinned, now 24,736,824 B / `F1594BCE...`, the same file as on the tower; Steam wrote it 2026-10-16 11:37.
+  - `C:\Program Files (x86)\Steam\steamapps\common\DayZ\DayZDiag_x64.exe`: 20,245,560 B / `34F6377B...` pinned, now 28,700,216 B / `C3A32D48...`, written 2026-10-16 11:19. On the laptop that is the real Steam DayZ install, and its policy's only project, `DayZ_MCP`, launches that same exe.
+- The laptop bundle was sealed 2026-09-19 (registry row `BB19D417...`).
+- Its dayz-mcp checkout is `b53052b` (2026-09-19), 17 commits behind `main`. That means it lacks `dd9c4ce`, the Bitdefender debug-gate fix, and Bitdefender is injecting `bdhkm64.dll` there too (`tasklist /m`: unsecapp, svchost).
+- INFERRED: a rebuild alone would hit `unapproved_debug_image`. The fix order is to bring the checkout to `main` (2 uncommitted files there, not yet read), then rebuild, re-pin with `replace-dayz-test-v1` (owner's OK), and test the lane from a session on the laptop's own desktop (no servers started over SSH).
