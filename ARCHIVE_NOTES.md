@@ -1859,3 +1859,37 @@ Trigger: rig run `581d8835-c382-47c6-864a-28eab68c3784` (project DayZ_MCP_Vanill
 **Live check:** after the fix, the same call from a fresh client got past the gate twice (22:01:16Z and 22:01:58Z): `events.jsonl` shows `lifecycle_start_rejected reason=foreign_diag_process` from the worker, which the failing runs never reached; the tool returned `active_run_exists` because a foreign retail server owns the box (`C:\Users\dking\dayztestserver_bolderchernarus\DayZServer_x64.exe -port=2602`, started 14:45 local by another session). A full launch (build with the 32-bit AddonBuilder, server and client up) is still UNVERIFIED until that box frees. Already-open MCP clients keep the old code until reopened (the freshness signal says `reopen_mcp_client`).
 
 **Not changed:** the sealed launcher (no packaged module touched, no reseal), Bitdefender settings (exceptions are the owner's call; with this fix none are needed for the launcher).
+
+## 2026-10-20 — `dayz_test_run` dead since 2026-10-15: a Steam update of DayZ Tools replaced binarize.exe, which the sealed bundle pins; rebuilt, re-pinned, lane live again
+
+**Symptom:** from 2026-10-15 every `dayz_test_run` (project `DayZ_MCP_Vanilla`, any mission, even `preflight=true`) failed `invalid_native_launcher_bundle`. Sessions worked around it for five days by hand-launching DayZDiag on port 2502.
+
+**Chain, one line per hop:**
+1. Steam updated DayZ Tools on 2026-10-15 03:47 local. `Bin\Binarize\binarize.exe` went from 17,424,384 B / sha256 `8DEA817B...314A` to 24,736,824 B / `F1594BCE29A6D3CABE9FF08A24AF6C4F31DA6E9DEF5B09159CE0428614CB6D5B` (VERIFIED, `Get-FileHash` this session).
+2. The bundle's `closure-manifest.json` pins every DayZ Tools file in `TOOLS_RELATIVE_FILES` (`dayz_mcp/dayz_tools_paths.py:57-80`) plus the DayZDiag build input by size, sha256 and NTFS identity (`build_native_launcher.py:705-715`).
+3. `load_verified_bundle` (`dayz_mcp/native_bundle.py:654`) fails at `:700` in `_open_verified_file` (`:473`) on the one drifted entry; the other 76 entries matched (VERIFIED read-only by the moon_mod session's reproduction, 2026-10-20). Preflight goes through the same load, so it failed too.
+
+**Second blocker, found by the first rebuild:** `build_native_launcher.py --offline --verify-reproducible` stopped with `identity_open_failed:C:\Users\dking\DayZTestServer_BC2\_mcp_dev` (`build_native_launcher.py:331`, from `_sealed_root` `:366`). The host policy still held the `DayZ_MCP_BC2` project, whose folder was retired on 2026-10-07 and then deleted by the owner. The owner kept that entry on 2026-10-06, before the folder went. With the owner's OK on 2026-10-20 the project was removed from `%LOCALAPPDATA%\DayZ_MCP\launcher-policy.json`; nothing else in the file changed (parsed equal minus that project). Backup: `launcher-policy.json.bak_2026-10-20`.
+
+**Also sealed by this rebuild (owner told up front):** the 2026-10-15 host-policy edit that moved the main `DayZ_MCP` project from `DayZ Exp\DayZDiag_x64.exe` to `D:\SteamLibrary\steamapps\common\DayZ\DayZDiag_x64.exe` (record: toolkit `projects\dayz_130_readiness\ARCHIVE_NOTES.md`, 2026-10-15 later). The old `worker-runtime.json` still named `DayZ Exp`.
+
+**Rebuild:** a rehearsal first, into a scratch `--output` with a scratch `--policy` copy, then the canonical build. Both gave identical hashes: `pe_sha256` `854E6452B5ABD709DAAA992E58D01953ADE37DEE11EA5FD217DCB21CB4297A0E`, `manifest_sha256` `BB9FF28DECD3396CC05B4AC799343962EE4CF6D6FF880E6F9D11D2E952229B2F`, `app_pyz_sha256` `2D8AC04F27EFAD13C967AB19A88EEB0DA649B3DD8314F503C56B06C219B93FFF`, `request_policy_sha256` `053261CFF0FBB08B673E80B7D7F72D148D2ED733B0A68BE0172F32DD5D216E53`. The new manifest pins the new binarize sha. The old bundle and registry files are backed up in that session's scratchpad (gitignored build output, as before).
+
+**Gates:**
+- Deny-launch suite: `python p0s_test_runner.py --tests tests.test_native_bundle tests.test_native_launcher_bundle tests.test_launcher_registry_update tests.test_security_runtime_audit tests.test_p0s_test_runner` gave 114 tests OK, `intercept_count` 0. No doc names the suite's module list; this one is the bundle, registry, runtime-closure and runner tests.
+- Registry: `launcher_registry_update replace-dayz-test-v1 --expected-sha256 570A479D...F8F1` (the registry file's uppercase sha) succeeded. Registry is now `7B020472B0A9135C8282E77ED82BFE8BFDA9182F5F27B44647E39772AA5BF3CA`, and its `dayz-test-v1` row sha equals the build's `pe_sha256`.
+- `checks\check_native_launcher_registry.py`: `NATIVE LAUNCHER REGISTRY OK`, provenance anchored (15 recorded transitions).
+- `write_packaged_modules_lock.py --check` failed before this work: `src/app_main.py` has differed from the lock since `ccc65f0`, which changed it after the lock was last written in `eadb42e`. The lock was regenerated after the replace, as the tool's own message says (`write_packaged_modules_lock.py:19-22`); `--check` now passes, with a one-line diff.
+- Adversarial review: not run. No packaged source, builder code or policy schema changed; only external pins and one removed project did.
+
+**Recipe correction:** README step 9 said `rollback-last` then `install-dayz-test-v1`. After any earlier `replace` that leaves the old row in place, and the install then fails `already_installed`; the Knowledge Pack CHANGELOG records the same finding from 2026-10-16. Step 9 now says `replace-dayz-test-v1`. The README's "four Steam DLLs" line was also stale: Steam client DLLs have been unpinned since 2026-09-02 (`dayz_tools_paths.py:81-87`). The same recipe line in the toolkit's `tools\DAYZ_MCP_ROADMAP.md` was corrected in the same session.
+
+**Live proof (box checked free first; the moon_mod session had released the rig):**
+- `dayz_test_run(project="DayZ_MCP_Vanilla", mode="server", mission="chernarus", preflight=true, port=2502, extra_mods=["@DayZ_MCP"])` returned `succeeded` in 0.78 s.
+- A real launch with the same arguments, minus preflight, returned `succeeded` with `server_alive: true` (run `49e796eb`). DayZDiag pid 97504 started 23:12:34 local with argv `D:\SteamLibrary\...\DayZDiag_x64.exe -server ... -mission=...\dayzOffline.chernarusplus -mod=...\@DayZ_MCP_Vanilla;...\@DayZ_MCP -filePatching -port=2502`.
+- `dayz_test_stop` returned `succeeded` (`forced_kill`). This also closes the 2026-10-11 open item that no full launch had passed the debug gate since the Bitdefender fix, for server mode; a `build=true` run of the 32-bit AddonBuilder is still not exercised.
+- The calling MCP client had been opened before the rebuild and launched without a reopen. INFERRED: the registry and bundle are read at call time, and the layout did not change.
+
+**Not changed:** `tools/dependency-lock.json` (the per-machine MSVC pin; its sha still equals the contract's `dependency_lock_sha256`), the uncommitted `process_lifecycle.py` work, and the stale 1.29 `C:\Program Files (x86)\Steam\steamapps\common\DayZ\DayZDiag_x64.exe`. That last one is still the build-time DayZDiag input the closure pins (2026-09-22 entry); deleting it should break the next build (INFERRED from `require_dayz_layout`'s DayZDiag marker, `dayz_tools_paths.py:229-261`). The phantom `@DayZ_MCP_Vanilla` on argv is the known project-name mod quirk (2026-09-19 entry).
+
+**Next Steam update of DayZ Tools:** the same `invalid_native_launcher_bundle` on every run, preflight included. Fix: rebuild, `replace-dayz-test-v1`, then the lock check (README-mcp step 9).

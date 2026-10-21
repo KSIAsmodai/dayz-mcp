@@ -126,13 +126,24 @@ The builder reads a host-only intent file. It never loads the published example.
    directory and `build_native_launcher.py` renews that directory with `os.replace`, so after
    `python build_native_launcher.py --offline --verify-reproducible` every `dayz_test_run` fails
    with `launcher_root_identity_drift` until the registry is renewed:
-   `python -m dayz_mcp.launcher_registry_update rollback-last`, then
-   `python -m dayz_mcp.launcher_registry_update install-dayz-test-v1 --expected-sha256 <sha256 of the CURRENT tools/approved-launchers.json>`.
-   The CAS value is the hash of the registry file after the rollback, never the PE's hash
-   (`launcher_registry_cas_mismatch` otherwise), and `install` without the rollback fails with
-   `launcher_registry_version_already_installed`. `bootstrap` is create-only: it never resets an
-   existing registry. A Steam client update invalidates the sealed bundle the same way (the
-   closure manifest pins four Steam DLLs by size and sha256): rebuild, then run this cycle.
+   `python -m dayz_mcp.launcher_registry_update replace-dayz-test-v1 --expected-sha256 <sha256 of the CURRENT tools/approved-launchers.json, UPPERCASE>`.
+   The CAS value is the hash of the registry file, never the PE's hash
+   (`launcher_registry_cas_mismatch` otherwise); lowercase hex fails as a bare
+   `invalid_launcher_registry_update`. `install-dayz-test-v1` is only for a registry with no
+   `dayz-test-v1` row (`launcher_registry_version_already_installed` otherwise), and
+   `rollback-last` restores the registry as it was before the last transition, so after any
+   earlier `replace` a rollback-then-install leaves the old row in place and the install fails
+   (corrected 2026-10-20; this step used to say rollback-last then install). `bootstrap` is
+   create-only: it never resets an existing registry. Then run
+   `python write_packaged_modules_lock.py --check` and, if it reports a drift, regenerate the
+   lock with `python write_packaged_modules_lock.py` and commit it.
+   A Steam update of DayZ Tools invalidates the sealed bundle the same way: the closure manifest
+   pins the DayZ Tools files (AddonBuilder, Binarize, CfgConvert, PboUtils) and the DayZDiag
+   build input by size and sha256, so every `dayz_test_run`, even `preflight=true`, fails
+   `invalid_native_launcher_bundle` until you rebuild and run this cycle. Steam's own client
+   DLLs are not pinned (`dayz_mcp/dayz_tools_paths.py:81-87`; corrected 2026-10-20, this line
+   used to say four Steam DLLs). A host-policy project whose folders no longer exist stops the
+   build with `identity_open_failed:<path>`: remove that project from the policy first.
    Live MCP client sessions keep the tool code and the bundle layout they started with: after a
    tools deploy, a daemon restart or a bundle layout change, reopen the client session.
 
