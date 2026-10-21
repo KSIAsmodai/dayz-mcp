@@ -1902,3 +1902,14 @@ Trigger: rig run `581d8835-c382-47c6-864a-28eab68c3784` (project DayZ_MCP_Vanill
 - The laptop bundle was sealed 2026-09-19 (registry row `BB19D417...`).
 - Its dayz-mcp checkout is `b53052b` (2026-09-19), 17 commits behind `main`. That means it lacks `dd9c4ce`, the Bitdefender debug-gate fix, and Bitdefender is injecting `bdhkm64.dll` there too (`tasklist /m`: unsecapp, svchost).
 - INFERRED: a rebuild alone would hit `unapproved_debug_image`. The fix order is to bring the checkout to `main` (2 uncommitted files there, not yet read), then rebuild, re-pin with `replace-dayz-test-v1` (owner's OK), and test the lane from a session on the laptop's own desktop (no servers started over SSH).
+
+**5090 laptop fixed 2026-10-21, driven over SSH from the tower with the owner's OK ("update its dayz-mcp code, rebuild and re-pin the launcher there"):**
+- Backup first: `C:\Users\dking\dayz-mcp-backup-2026-10-21\` holds the bundle, registry, receipts, baseline, `dependency-lock.json`, the modules lock and the host policy (69 files).
+- Code: fetched a `git bundle` of `b53052b..main` from the tower and fast-forwarded to `5392ea4`. The laptop's only local edit, the per-machine `dependency-lock.json`, was not touched by any incoming commit. Its sha is `BADE22F9...` before and after, the same pin as the tower's. No incoming change to `addon/`, so the deployed bridge pbo still matches.
+- Rebuild: `build_native_launcher.py --offline --verify-reproducible` exit 0. New `pe_sha256` is `C914389C48C9F16A99C0D2C212C957CD6B3114FA4926EBA44E4CCFFC527507CD` and `manifest_sha256` is `A1BF703F...`. Its pins differ from the tower's because the laptop policy and paths differ.
+- Gates:
+  - Deny-launch suite (same five modules): 114 OK, `intercept_count` 0.
+  - `write_packaged_modules_lock.py --check` passes.
+  - `replace-dayz-test-v1 --expected-sha256 629F9294...` exit 0, moving the registry to `971FCD06...`; its row sha equals the new PE.
+  - `check_native_launcher_registry.py` gave `NATIVE LAUNCHER REGISTRY OK`, provenance anchored (3 transitions).
+- Not yet done: a live `dayz_test_run` on the laptop. Four `--client` processes there (started 2026-10-20 23:24 and 23:30) still run the old code, so the owner reopens Claude on the laptop and runs the preflight from a session on its own desktop.
